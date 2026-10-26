@@ -70,7 +70,13 @@ final class Monitor: ObservableObject {
     @Published var statuses: [ServiceStatus] = []
     @Published var settings: [ServiceSettings] = []
     @Published var pending: [String: Bool] = [:]
-    @Published var selectedID: String? { didSet { layoutChanged?() } }
+    @Published var selectedID: String? {
+        didSet {
+            if selectedID != oldValue { settingsExpanded = false }
+            layoutChanged?()
+        }
+    }
+    @Published var settingsExpanded = false { didSet { layoutChanged?() } }
     @Published var error: String? { didSet { layoutChanged?() } }
     @Published var saving = false
     var layoutChanged: (() -> Void)?
@@ -286,46 +292,52 @@ struct StatusDot: NSViewRepresentable {
     }
 }
 
-struct ServiceControl: View {
+struct ServiceSwitch: View {
     @ObservedObject var monitor: Monitor
     let status: ServiceStatus
-    let label: String?
-    let showsStatus: Bool
 
     var body: some View {
-        HStack(spacing: 7) {
-            if showsStatus {
-                StatusDot(healthy: status.healthy, reason: status.detail)
-                    .frame(width: 12, height: 24)
-            }
-            if let label {
-                Text(label).font(.system(size: 12))
-                    .fixedSize()
-                    .help(status.detail + " · localhost:" + String(status.port))
-            }
-            Toggle(status.name, isOn: Binding(
-                get: { monitor.pending[status.id] ?? status.running },
-                set: { monitor.toggle(status, on: $0) }
-            ))
-            .labelsHidden().toggleStyle(.switch).controlSize(.small)
-            .fixedSize()
-            .disabled(monitor.isBusy(status.id))
-            .accessibilityLabel(status.name)
-            if monitor.pending[status.id] != nil {
-                ProgressView().controlSize(.mini).frame(width: 16, height: 28)
-            } else {
-                Button {
-                    monitor.error = nil
-                    monitor.selectedID = status.id
+        Toggle(status.name, isOn: Binding(
+            get: { monitor.pending[status.id] ?? status.running },
+            set: { monitor.toggle(status, on: $0) }
+        ))
+        .labelsHidden().toggleStyle(.switch).controlSize(.mini).fixedSize()
+        .disabled(monitor.isBusy(status.id))
+        .accessibilityLabel(status.name)
+        .help(status.detail)
+    }
+}
+
+struct RowSettings: View {
+    @ObservedObject var monitor: Monitor
+    let title: String
+    let serviceID: String
+    let queueID: String?
+
+    private func open(_ id: String) {
+        monitor.error = nil
+        monitor.selectedID = id
+    }
+    var body: some View {
+        Group {
+            if let queueID {
+                Menu {
+                    Button("Service settings…") { open(serviceID) }
+                    Button("Queue settings…") { open(queueID) }
                 } label: {
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary).frame(width: 16, height: 28)
+                    Image(systemName: "gearshape").font(.system(size: 11))
                 }
-                .buttonStyle(.plain)
-                .help("Startup settings for " + status.name)
-                .accessibilityLabel("Startup settings for " + status.name)
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            } else {
+                Button { open(serviceID) } label: {
+                    Image(systemName: "gearshape").font(.system(size: 11))
+                }.buttonStyle(.plain)
             }
         }
+        .foregroundStyle(.secondary)
+        .frame(width: 20, height: 24)
+        .help("Startup settings for " + title)
+        .accessibilityLabel("Settings for " + title)
     }
 }
 
@@ -336,24 +348,32 @@ struct ServiceFamilyRow: View {
     let queue: ServiceStatus?
 
     var body: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 7) {
-                if queue == nil {
-                    StatusDot(healthy: service.healthy, reason: service.detail)
-                        .frame(width: 12, height: 24)
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                StatusDot(healthy: service.healthy, reason: service.detail)
+                    .frame(width: 8, height: 20)
+                Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            ServiceSwitch(monitor: monitor, status: service)
+                .frame(width: 44)
+            Group {
+                if let queue {
+                    HStack(spacing: 4) {
+                        StatusDot(healthy: queue.healthy, reason: queue.detail)
+                            .frame(width: 8, height: 20)
+                        ServiceSwitch(monitor: monitor, status: queue)
+                    }
+                } else {
+                    Text("—").font(.system(size: 11)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
-                Text(title).font(.system(size: 13, weight: .medium))
-            }.frame(width: 144, alignment: .leading)
-            ServiceControl(monitor: monitor, status: service,
-                           label: queue == nil ? nil : "Service", showsStatus: queue != nil)
-                .frame(width: 144, alignment: .trailing)
-            if let queue {
-                ServiceControl(monitor: monitor, status: queue, label: "Queue", showsStatus: true)
-                    .frame(width: 144, alignment: .trailing)
+            }.frame(width: 58)
+            if monitor.pending[service.id] != nil || (queue.map { monitor.pending[$0.id] != nil } ?? false) {
+                ProgressView().controlSize(.mini).frame(width: 20, height: 24)
             } else {
-                Color.clear.frame(width: 144, height: 1).accessibilityHidden(true)
+                RowSettings(monitor: monitor, title: title, serviceID: service.id, queueID: queue?.id)
             }
-        }.frame(height: 39)
+        }.frame(height: 28)
     }
 }
 
@@ -376,92 +396,124 @@ struct SettingsView: View {
     @State private var port: String
     @State private var queuePort: String
     private var generator: Bool { value.id == "image" || value.id == "voice" }
+    private var title: String {
+        if value.id == "bridge" { return "AI Bridge" }
+        return value.id.hasPrefix("image") ? "Image Generator" : "Voice Generator"
+    }
+    private var subtitle: String {
+        value.id == "bridge" ? "Startup settings" : value.id.hasSuffix("queue") ? "Queue startup" : "Service startup"
+    }
     init(monitor: Monitor, value: ServiceSettings) {
         self.monitor = monitor
         _value = State(initialValue: value)
         _port = State(initialValue: String(value.port))
         _queuePort = State(initialValue: String(monitor.settings.first(where: { $0.id == value.id + "-queue" })?.port ?? 0))
     }
-    func pathField(_ title: String, _ binding: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 12, weight: .medium))
-            TextField(title, text: binding).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+    private func formRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 10) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+                .frame(width: 82, alignment: .leading)
+            content().frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(minHeight: 22)
+    }
+    private func pathRow(_ title: String, _ binding: Binding<String>) -> some View {
+        formRow(title) {
+            TextField(title, text: binding).labelsHidden().textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced)).controlSize(.small)
                 .help(binding.wrappedValue)
         }
     }
-    func portField(_ title: String, _ binding: Binding<String>) -> some View {
-        HStack { Text(title); Spacer(); TextField(title, text: binding).textFieldStyle(.roundedBorder).frame(width: 80) }
-            .font(.system(size: 12))
+    private func portRow(_ title: String, _ binding: Binding<String>) -> some View {
+        formRow(title) {
+            TextField(title, text: binding).labelsHidden().textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced)).controlSize(.small).frame(width: 72)
+        }
+    }
+    private func flagRow(_ title: String, _ binding: Binding<Bool>) -> some View {
+        formRow(title) {
+            Toggle(title, isOn: binding).labelsHidden().toggleStyle(.switch).controlSize(.mini).fixedSize()
+                .accessibilityLabel(title)
+        }
+    }
+    private var modelPicker: some View {
+        Picker("Model", selection: Binding(get: { value.model ?? "" }, set: { value.model = $0 })) {
+            if value.id == "image" {
+                Text("Z-Image Turbo").tag("z-image-turbo")
+                Text("Chroma1-HD").tag("chroma1-hd")
+                Text("Chroma1-Flash").tag("chroma1-flash")
+            } else {
+                Text("Higgs TTS 3").tag("higgs")
+                Text("VoxCPM2").tag("voxcpm2")
+                Text("Qwen3-TTS").tag("qwen3")
+                Text("Chatterbox Original").tag("chatterbox")
+                Text("IndexTTS").tag("indextts")
+                Text("MOSS").tag("moss")
+                Text("Fish").tag("fish")
+            }
+        }.labelsHidden().font(.system(size: 12)).controlSize(.small)
     }
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             HStack(spacing: 8) {
-                Button { monitor.error = nil; monitor.selectedID = nil } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.plain).accessibilityLabel("Back to services")
-                Text(value.name).font(.system(size: 14, weight: .semibold))
+                Button { monitor.error = nil; monitor.selectedID = nil } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium)).frame(width: 18, height: 28)
+                }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Back to services")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
                 Spacer()
             }
+            Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 15) {
-                    Text("Saved settings apply the next time this service starts.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                    pathField(value.id == "bridge" ? "State folder" : "Project folder", $value.root)
-                    if value.id == "bridge" {
-                        pathField("Executable", Binding(get: { value.binary ?? "" }, set: { value.binary = $0 }))
-                    }
-                    portField("Port", $port)
-                    if generator {
-                        Picker("Model", selection: Binding(get: { value.model ?? "" }, set: { value.model = $0 })) {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if generator { formRow("Model") { modelPicker } }
+                        portRow("Port", $port)
+                        if generator {
+                            portRow("Queue port", $queuePort)
+                            flagRow("Prompt LLM", Binding(get: { value.llm ?? true }, set: { value.llm = $0 }))
                             if value.id == "image" {
-                                Text("Z-Image Turbo").tag("z-image-turbo")
-                                Text("Chroma1-HD").tag("chroma1-hd")
-                                Text("Chroma1-Flash").tag("chroma1-flash")
-                            } else {
-                                Text("Higgs TTS 3").tag("higgs")
-                                Text("VoxCPM2").tag("voxcpm2")
-                                Text("Qwen3-TTS").tag("qwen3")
-                                Text("Chatterbox Original").tag("chatterbox")
-                                Text("IndexTTS").tag("indextts")
-                                Text("MOSS").tag("moss")
-                                Text("Fish").tag("fish")
+                                flagRow("LoRAs", Binding(get: { value.loras ?? true }, set: { value.loras = $0 }))
                             }
-                        }.font(.system(size: 12))
-                        portField("Queue port", $queuePort)
-                        Toggle("Prompt expansion", isOn: Binding(get: { value.llm ?? true }, set: { value.llm = $0 }))
-                            .toggleStyle(.switch).controlSize(.small)
-                        if value.id == "image" {
-                            Toggle("LoRAs", isOn: Binding(get: { value.loras ?? true }, set: { value.loras = $0 }))
-                                .toggleStyle(.switch).controlSize(.small)
                         }
-                        Text("Starting a generator also starts its queue if needed. Model assets must already be installed.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        if value.id == "bridge" {
+                            flagRow("File logging", Binding(get: { value.log_file_only ?? true }, set: { value.log_file_only = $0 }))
+                        }
                     }
-                    if value.id == "bridge" {
-                        Toggle("File-only logging", isOn: Binding(get: { value.log_file_only ?? true }, set: { value.log_file_only = $0 }))
-                            .toggleStyle(.switch).controlSize(.small)
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Environment overrides").font(.system(size: 12, weight: .medium))
-                        Text("Optional KEY=value entries, one per line. Values are literal.")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                        TextEditor(text: $value.environment).font(.system(size: 11, design: .monospaced))
-                            .scrollContentBackground(.hidden).padding(5).frame(height: 84)
-                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
-                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.25)))
-                            .accessibilityLabel("Environment overrides")
+                    .padding(10)
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    DisclosureGroup(isExpanded: $monitor.settingsExpanded) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            pathRow(value.id == "bridge" ? "State folder" : "Project", $value.root)
+                            if value.id == "bridge" {
+                                pathRow("Executable", Binding(get: { value.binary ?? "" }, set: { value.binary = $0 }))
+                            }
+                            Text("Environment overrides").font(.system(size: 11, weight: .medium)).padding(.top, 2)
+                            TextEditor(text: $value.environment).font(.system(size: 11, design: .monospaced))
+                                .scrollContentBackground(.hidden).padding(5).frame(height: 70)
+                                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.2)))
+                                .accessibilityLabel("Environment overrides")
+                            Text("KEY=value, one per line. Values are literal.")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }.padding(.top, 8).padding(.horizontal, 10)
+                    } label: {
+                        Text("Paths & environment").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     }
                     if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil } }
-                }.padding(.trailing, 4)
-            }
-            HStack {
-                Button("Open logs") { monitor.openLogs(value.id) }.controlSize(.small)
+                }.padding(.top, 1)
+            }.scrollIndicators(.hidden)
+            HStack(spacing: 8) {
+                Button("Logs") { monitor.openLogs(value.id) }.buttonStyle(.borderless).controlSize(.small)
                 Spacer()
-                if monitor.saving { ProgressView().controlSize(.small) }
+                Text("Applies on next start").font(.system(size: 10)).foregroundStyle(.secondary)
+                if monitor.saving { ProgressView().controlSize(.mini) }
                 Button("Save") { monitor.save(value, port: port, queuePort: generator ? queuePort : nil) }
                     .keyboardShortcut(.defaultAction).controlSize(.small)
                     .disabled(monitor.saving || monitor.isBusy(value.id))
             }
-        }.padding(18)
+        }.padding(14)
     }
 }
 
@@ -472,24 +524,45 @@ struct PopoverView: View {
             if let id = monitor.selectedID, let value = monitor.settings.first(where: { $0.id == id }) {
                 SettingsView(monitor: monitor, value: value).id(id)
             } else {
-                VStack(spacing: 4) {
+                VStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform.path.ecg").font(.system(size: 14, weight: .medium)).foregroundStyle(Color.accentColor)
+                        Text("Daemon Monitor").font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        Text("\(monitor.statuses.filter(\.healthy).count)/5 online")
+                            .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
+                        Button { monitor.refresh() } label: {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 20)
+                        }.buttonStyle(.plain).foregroundStyle(.secondary).help("Refresh status").accessibilityLabel("Refresh status")
+                    }
+                    Divider()
                     if monitor.statuses.isEmpty {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        if let bridge = monitor.statuses.first(where: { $0.id == "bridge" }) {
-                            ServiceFamilyRow(monitor: monitor, title: "AI Bridge", service: bridge, queue: nil)
+                        VStack(spacing: 2) {
+                            HStack(spacing: 8) {
+                                Spacer(minLength: 0)
+                                Text("Service").frame(width: 44)
+                                Text("Queue").frame(width: 58)
+                                Color.clear.frame(width: 20, height: 1)
+                            }.font(.system(size: 10)).foregroundStyle(.secondary).frame(height: 12)
+                            VStack(spacing: 0) {
+                                if let bridge = monitor.statuses.first(where: { $0.id == "bridge" }) {
+                                    ServiceFamilyRow(monitor: monitor, title: "AI Bridge", service: bridge, queue: nil)
+                                }
+                                if let image = monitor.statuses.first(where: { $0.id == "image" }),
+                                   let queue = monitor.statuses.first(where: { $0.id == "image-queue" }) {
+                                    ServiceFamilyRow(monitor: monitor, title: "Image Generator", service: image, queue: queue)
+                                }
+                                if let voice = monitor.statuses.first(where: { $0.id == "voice" }),
+                                   let queue = monitor.statuses.first(where: { $0.id == "voice-queue" }) {
+                                    ServiceFamilyRow(monitor: monitor, title: "Voice Generator", service: voice, queue: queue)
+                                }
+                            }
                         }
-                        if let image = monitor.statuses.first(where: { $0.id == "image" }),
-                           let queue = monitor.statuses.first(where: { $0.id == "image-queue" }) {
-                            ServiceFamilyRow(monitor: monitor, title: "Image Generator", service: image, queue: queue)
-                        }
-                        if let voice = monitor.statuses.first(where: { $0.id == "voice" }),
-                           let queue = monitor.statuses.first(where: { $0.id == "voice-queue" }) {
-                            ServiceFamilyRow(monitor: monitor, title: "Voice Generator", service: voice, queue: queue)
-                        }
-                        if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil }.padding(.top, 6) }
+                        if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil } }
                     }
-                }.padding(.horizontal, 16).padding(.vertical, 12)
+                }.padding(12)
             }
         }
     }
@@ -509,9 +582,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: "Daemon Monitor")
+            button.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "Daemon Monitor")
             button.image?.isTemplate = true
-            button.image?.size = NSSize(width: 18, height: 18)
+            button.image?.size = NSSize(width: 17, height: 16)
             button.target = self
             button.action = #selector(clickStatusItem(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -553,9 +626,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         timer = nextTimer
     }
     private func resize() {
-        popover.contentSize = monitor.selectedID == nil
-            ? NSSize(width: 496, height: monitor.error == nil ? 149 : 239)
-            : NSSize(width: 430, height: 590)
+        if let id = monitor.selectedID {
+            let base: CGFloat = id == "image" ? 304 : id == "voice" ? 274 : id == "bridge" ? 218 : 188
+            let extra: CGFloat = monitor.settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
+            popover.contentSize = NSSize(width: 360, height: base + extra + (monitor.error == nil ? 0 : 76))
+        } else {
+            popover.contentSize = NSSize(width: 320, height: monitor.error == nil ? 160 : 244)
+        }
     }
     @objc private func clickStatusItem(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp { showMenu(); return }

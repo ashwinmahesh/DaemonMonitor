@@ -1,6 +1,6 @@
 # Working on Daemon Monitor
 
-Read README.md. Keep the three-row popover compact (AI Bridge, Image Generator, Voice Generator); startup configuration belongs behind each chevron. Native SwiftUI/AppKit lives in Sources/DaemonMonitor.swift; the Python standard-library lifecycle adapter is Resources/control.py. Prefer argument arrays, never shell interpolation/evaluation.
+Read README.md. Keep the three-row popover compact (AI Bridge, Image Generator, Voice Generator); use shared Service/Queue column headings, health dots directly beside names, and one settings button per row. Startup configuration uses aligned form rows with paths/environment in an expandable section. Native SwiftUI/AppKit lives in Sources/DaemonMonitor.swift; Tools/MakeIcon.swift generates the app icon from the matching activity symbol; the Python standard-library lifecycle adapter is Resources/control.py. Prefer argument arrays, never shell interpolation/evaluation.
 
 The user manages model startup manually. Preserve pre-existing services and active jobs. Never clear queues, submit inference jobs, download models, change model environments, or stop services from other checkouts/test ports to validate the monitor. After testing, stop only generators/queues started for that test. Busy generators must refuse stop; never force-kill them. ai-bridge clean shutdown can interrupt provider work, so use fixtures to test it and leave the user's running bridge alone.
 

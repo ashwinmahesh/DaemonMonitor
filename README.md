@@ -1,6 +1,6 @@
 # Daemon Monitor
 
-A native macOS menu bar app for the local ai-bridge, ImageGen-Service and VoiceGen-Service. Click the server-rack icon in the right side of the menu bar to open its attached popover. The main view contains three rows: AI Bridge with one switch, Image Generator with Service and Queue switches, and Voice Generator with Service and Queue switches. All five controls retain independent health dots and startup-settings chevrons.
+A native macOS menu bar app for the local ai-bridge, ImageGen-Service and VoiceGen-Service. Click the activity icon in the right side of the menu bar to open its attached popover. The main view contains three rows: AI Bridge with one switch, Image Generator with Service and Queue switches, and Voice Generator with Service and Queue switches. The header shows the app name and online count. Shared Service/Queue column headings, compact switches and health dots keep the three rows narrow. Each row has a settings button; generator rows offer separate Service settings and Queue settings. The menu bar activity glyph and the app icon share the same visual mark.
 
 Green means the service's health API reports a working service. Red means stopped, starting or unhealthy. Hover over a red dot (or click it with a mouse or accessibility tool) to see a tooltip above it with the reason: not started, waiting for startup, not responding, a specific health error, or the most recent startup/exit failure. Startup failures persist across monitor restarts and clear after a successful start or explicit stop. The switch tracks the process separately from health, so an unhealthy running process can still be switched off. Loading/unloaded speech weights are normal when the voice API is otherwise ready. A spinner appears during start/stop operations. Status refreshes every 15 seconds while the popover is expanded and focused, and every 15 minutes while closed or unfocused. Opening the popover, completing a start/stop action, saving settings or choosing Refresh status refreshes immediately. The polling timer is rescheduled when visibility or focus changes, so the hidden app does not wake up at the foreground rate.
 
@@ -16,7 +16,7 @@ The app launches at login and has no Dock icon. Right-click its menu bar icon fo
 
 ## Startup settings
 
-Click the chevron beside any switch. Back discards unsaved edits; Save stores validated settings for the next explicit start. Saving never restarts a service. Running services remain monitored at their actual endpoint until stopped, even when you save another port or folder.
+Click a row’s settings button. For generators, choose Service settings or Queue settings. Back discards unsaved edits; Save stores validated settings for the next explicit start. The startup form aligns labels and controls in two columns; Paths & environment expands the project/state folder, executable and environment controls. Saving never restarts a service. Running services remain monitored at their actual endpoint until stopped, even when you save another port or folder.
 
 | Service | Startup controls | Initial defaults |
 | --- | --- | --- |
