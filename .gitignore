@@ -1,0 +1,10 @@
+build/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local machine verification and runtime diagnostics.
+verification.json
+*.log
+.env
+.env.*
