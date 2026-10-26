@@ -32,7 +32,10 @@ struct ConfigReply: Decodable { let services: [ServiceSettings] }
 
 // Process arguments never pass through a shell. All blocking work stays off the UI thread.
 enum Helper {
-    static func call(_ arguments: [String], input: Data? = nil, completion: @escaping (Result<Data, Error>) -> Void) {
+    typealias Completion = (Result<Data, Error>) -> Void
+    typealias Caller = ([String], Data?, @escaping Completion) -> Void
+
+    static func call(_ arguments: [String], input: Data? = nil, completion: @escaping Completion) {
         let script = Bundle.main.resourceURL!.appendingPathComponent("control.py")
         DispatchQueue.global(qos: .utility).async {
             do {
@@ -81,12 +84,18 @@ final class Monitor: ObservableObject {
     @Published var saving = false
     var layoutChanged: (() -> Void)?
     var statusChanged: (() -> Void)?
+    private let helper: Helper.Caller
     private var refreshing = false
+    private var refreshQueued = false
+    private var refreshCompletions: [() -> Void] = []
+
+    init(helper: @escaping Helper.Caller = Helper.call) { self.helper = helper }
 
     func family(_ id: String) -> String { String(id.split(separator: "-")[0]) }
     func isBusy(_ id: String) -> Bool { pending.keys.contains { family($0) == family(id) } }
+    func isOn(_ id: String) -> Bool { pending[id] ?? statuses.first(where: { $0.id == id })?.running ?? false }
     func loadSettings() {
-        Helper.call(["config"]) { result in
+        helper(["config"], nil) { result in
             switch result {
             case .success(let data):
                 do { self.settings = try JSONDecoder().decode(ConfigReply.self, from: data).services }
@@ -95,11 +104,13 @@ final class Monitor: ObservableObject {
             }
         }
     }
-    func refresh() {
-        guard !refreshing else { return }
+    func refresh(completion: (() -> Void)? = nil) {
+        if let completion { refreshCompletions.append(completion) }
+        guard !refreshing else { refreshQueued = true; return }
         refreshing = true
-        Helper.call(["status"]) { result in
-            self.refreshing = false
+        let completions = refreshCompletions
+        refreshCompletions.removeAll()
+        helper(["status"], nil) { result in
             switch result {
             case .success(let data):
                 do { self.statuses = try JSONDecoder().decode(StatusReply.self, from: data).services; self.statusChanged?() }
@@ -111,16 +122,22 @@ final class Monitor: ObservableObject {
                     self.statuses[i].detail = "Status unavailable: " + error.localizedDescription
                 }
             }
+            self.refreshing = false
+            completions.forEach { $0() }
+            if self.refreshQueued {
+                self.refreshQueued = false
+                self.refresh()
+            }
         }
     }
     func toggle(_ status: ServiceStatus, on: Bool) {
         guard !isBusy(status.id) else { return }
         error = nil
         pending[status.id] = on
-        Helper.call([on ? "start" : "stop", status.id]) { result in
-            self.pending.removeValue(forKey: status.id)
+        helper([on ? "start" : "stop", status.id], nil) { result in
             if case .failure(let error) = result { self.error = error.localizedDescription }
-            self.refresh()
+            // Keep the switch steady until a snapshot requested after the action arrives.
+            self.refresh { self.pending.removeValue(forKey: status.id) }
         }
     }
     func save(_ value: ServiceSettings, port: String, queuePort: String?) {
@@ -141,7 +158,7 @@ final class Monitor: ObservableObject {
             let input = try JSONSerialization.data(withJSONObject: json)
             saving = true
             error = nil
-            Helper.call(["save"], input: input) { result in
+            helper(["save"], input) { result in
                 self.saving = false
                 switch result {
                 case .success: self.selectedID = nil; self.loadSettings(); self.refresh()
@@ -166,9 +183,12 @@ final class Monitor: ObservableObject {
 struct StatusDot: NSViewRepresentable {
     let healthy: Bool
     let reason: String
+    let port: Int
 
     func makeNSView(context: Context) -> HoverDot { HoverDot() }
-    func updateNSView(_ view: HoverDot, context: Context) { view.configure(healthy: healthy, reason: reason) }
+    func updateNSView(_ view: HoverDot, context: Context) {
+        view.configure(healthy: healthy, reason: healthy ? "Running on port \(port)" : reason)
+    }
     static func dismantleNSView(_ view: HoverDot, coordinator: ()) { view.dismissTooltip() }
 
     final class HoverDot: NSView {
@@ -201,7 +221,7 @@ struct StatusDot: NSViewRepresentable {
             guard self.healthy != healthy || self.reason != reason else { return }
             self.healthy = healthy
             self.reason = reason
-            setAccessibilityLabel(healthy ? "Healthy" : reason)
+            setAccessibilityLabel(reason)
             needsDisplay = true
             dismissTooltip()
             if hovered { scheduleTooltip() }
@@ -246,7 +266,7 @@ struct StatusDot: NSViewRepresentable {
         private func showTooltip() {
             guard hovered, tooltip == nil, let window, window.isKeyWindow else { return }
             let font = NSFont.systemFont(ofSize: 11)
-            let text = healthy ? "Healthy" : String(reason.prefix(1400))
+            let text = String(reason.prefix(1400))
             let measured = (text as NSString).boundingRect(with: NSSize(width: 260, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
             let size = NSSize(width: max(120, ceil(measured.width)) + 20, height: ceil(measured.height) + 18)
             let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -297,7 +317,7 @@ struct ServiceSwitch: View {
 
     var body: some View {
         Toggle(status.name, isOn: Binding(
-            get: { monitor.pending[status.id] ?? status.running },
+            get: { monitor.isOn(status.id) },
             set: { monitor.toggle(status, on: $0) }
         ))
         .labelsHidden().toggleStyle(.switch).controlSize(.mini).fixedSize()
@@ -349,7 +369,7 @@ struct ServiceFamilyRow: View {
     var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 5) {
-                StatusDot(healthy: service.healthy, reason: service.detail)
+                StatusDot(healthy: service.healthy, reason: service.detail, port: service.port)
                     .frame(width: 8, height: 20)
                 Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -358,7 +378,7 @@ struct ServiceFamilyRow: View {
             Group {
                 if let queue {
                     HStack(spacing: 4) {
-                        StatusDot(healthy: queue.healthy, reason: queue.detail)
+                        StatusDot(healthy: queue.healthy, reason: queue.detail, port: queue.port)
                             .frame(width: 8, height: 20)
                         ServiceSwitch(monitor: monitor, status: queue)
                     }
@@ -670,8 +690,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         focusObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 }
-
-let application = NSApplication.shared
-let delegate = AppDelegate()
-application.delegate = delegate
-application.run()

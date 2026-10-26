@@ -88,9 +88,12 @@ Use `--support /absolute/folder` to isolate configuration and process records fo
 
 ```sh
 python3 -m unittest discover -s Tests -v
+zsh Tests/run_monitor_tests.sh
 ```
 
 The unit suite uses mocks and temporary local HTTP fixtures. It covers startup arguments, configuration validation, retention of running endpoints, literal environment values, authenticated health checks, independent queue controls, stale PIDs, development ports, busy generators, and refusal to replace unrelated listeners.
+
+The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover failed actions and status checks, without operating real services.
 
 For lifecycle changes, run the suite and build the app. Inspect the popover and settings on an available Mac. Preserve existing services and jobs during validation; do not submit inference jobs, clear queues, download models, or force-kill services. Record actual manual checks and limitations in the ignored local `verification.json` file.
 

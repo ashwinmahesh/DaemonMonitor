@@ -10,7 +10,7 @@ Click the activity icon in the menu bar to open Daemon Monitor.
 
 - **AI Bridge** has one on/off switch.
 - **Image Generator** and **Voice Generator** each have separate **Service** and **Queue** switches.
-- Hover over a **green dot** to see **Healthy**. A **red dot** means stopped, starting, or unhealthy; hover over it to see the reason.
+- Hover over a **green dot** to see its running port. A **red dot** means stopped, starting, or unhealthy; hover over it to see the reason.
 - The header shows how many of the five services are online. Click the refresh button for an immediate check.
 
 Status updates every **15 seconds** while the popover is open and focused, and every **15 minutes** while hidden or unfocused. Opening it refreshes status immediately.
