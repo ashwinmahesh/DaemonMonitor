@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shlex
 import signal
 import socket
@@ -20,8 +21,12 @@ import time
 
 IDS = ('bridge', 'image', 'image-queue', 'voice', 'voice-queue')
 NAMES = ('ai-bridge', 'Image gen service', 'Image gen queue', 'Voice gen service', 'Voice gen queue')
-IMAGE_MODELS = ('z-image-turbo', 'chroma1-hd', 'chroma1-flash')
-VOICE_MODELS = ('voxcpm2', 'qwen3', 'chatterbox', 'indextts', 'moss', 'fish', 'higgs')
+GENERATOR_SERVICES = {'image': 'imagegen-generator', 'voice': 'voicegen-generator'}
+MODEL_ENV_KEYS = ('MODEL', 'IMAGE_MODEL', 'MODEL_BACKEND', 'DEFAULT_MODEL')
+NORMAL_GENERATOR_STAGES = {'ready', 'idle', 'unloaded', 'starting', 'loading', 'switching',
+                           'expanding', 'rendering', 'generating', 'synthesizing', 'processing',
+                           'preparing', 'preview', 'previewing', 'unloading', 'saving', 'writing', 'paused', 'waiting', 'blocked'}
+BUSY_GENERATOR_STAGES = NORMAL_GENERATOR_STAGES - {'ready', 'idle', 'unloaded', 'paused', 'waiting', 'blocked'}
 LABEL = 'local.ai-bridge.api'
 DEFAULT_SUPPORT = Path.home() / 'Library/Application Support/DaemonMonitor'
 
@@ -32,9 +37,9 @@ def defaults():
     return {'services': [
         dict(id='bridge', name=NAMES[0], port=8765, root='~/Library/Application Support/AI Bridge',
              binary='~/Library/Application Support/AI Bridge/bin/ai-bridge', log_file_only=True, environment=''),
-        dict(id='image', name=NAMES[1], port=5732, root=image, model='z-image-turbo', llm=True, loras=True, environment=''),
+        dict(id='image', name=NAMES[1], port=5732, root=image, llm=True, loras=True, environment=''),
         dict(id='image-queue', name=NAMES[2], port=55302, root=image, environment=''),
-        dict(id='voice', name=NAMES[3], port=5743, root=voice, model='higgs', llm=True, environment=''),
+        dict(id='voice', name=NAMES[3], port=5743, root=voice, llm=True, environment=''),
         dict(id='voice-queue', name=NAMES[4], port=55205, root=voice, environment='')
     ]}
 
@@ -67,7 +72,9 @@ def environment(text):
         key, separator, value = line.partition('=')
         if not separator or not key or not key.replace('_', 'a').isalnum() or key[0].isdigit():
             raise ValueError('Environment overrides must use KEY=value, one per line.')
-        if key in ('HOME', 'PATH', 'MODEL', 'IMAGE_MODEL', 'MODEL_BACKEND', 'PORT', 'QUEUE_PORT', 'NO_LLM', 'NO_LORAS', 'NONINTERACTIVE'):
+        if key in MODEL_ENV_KEYS:
+            raise ValueError('Model selection is managed by the generator UI/API; remove ' + key + ' from environment overrides.')
+        if key in ('HOME', 'PATH', 'PORT', 'QUEUE_PORT', 'NO_LLM', 'NO_LORAS', 'NONINTERACTIVE'):
             raise ValueError('Use the named controls for ' + key + '; HOME and PATH are managed by the app.')
         result[key] = value
     return result
@@ -86,8 +93,6 @@ def validate(config):
         for flag in ('llm', 'loras', 'log_file_only'):
             if flag in item and type(item[flag]) is not bool: raise ValueError(flag + ' must be a boolean.')
     if len(set(ports)) != len(ports): raise ValueError('Each service needs a different port.')
-    if services[1]['model'] not in IMAGE_MODELS or services[3]['model'] not in VOICE_MODELS:
-        raise ValueError('Choose a supported model.')
     for a, b in ((1, 2), (3, 4)):
         if path(services[a]['root']) != path(services[b]['root']):
             raise ValueError('A generator and its queue must use the same project folder.')
@@ -99,8 +104,16 @@ class Controller:
     def __init__(self, support=DEFAULT_SUPPORT):
         self.support = Path(support)
         self.config_file = self.support / 'services.json'
-        self.config = validate(read_json(self.config_file, defaults()))
+        self.config = self.load_config()
         self.health_errors = {}
+
+    def load_config(self):
+        config = read_json(self.config_file, defaults())
+        # Model selection belongs to each service at runtime. Ignore
+        # obsolete monitor overrides even before the user next saves settings.
+        for item in config['services']:
+            item.pop('model', None)
+        return validate(config)
 
     def item(self, identifier):
         return next(s for s in self.config['services'] if s['id'] == identifier)
@@ -152,9 +165,37 @@ class Controller:
         identifier, root = item['id'], str(path(item['root']).resolve())
         if identifier == 'bridge':
             return state.get('ok') is True and state.get('capabilities', {}).get('multi_project') is True
-        if identifier.startswith('image'):
-            return state.get('project_dir') == root and (state.get('service') == 'imagegen-queue' if identifier.endswith('queue') else state.get('model') in IMAGE_MODELS)
-        return state.get('project') == root and (state.get('service') == 'voicegen-queue' and state.get('role') == 'queue-crud' if identifier.endswith('queue') else state.get('service') in VOICE_MODELS)
+        family = identifier.split('-')[0]
+        if state.get('project_dir' if family == 'image' else 'project') != root: return False
+        if state.get('queue_scope') != 'shared' or not self.protocol_version(state.get('version')): return False
+        if identifier.endswith('queue'):
+            return state.get('service') == family + 'gen-queue' and (family == 'image' or state.get('role') == 'queue-crud')
+        # Stable service/protocol identity, never the loaded model ID.
+        return (state.get('runtime_model_switching') is True
+                and state.get('service') == GENERATOR_SERVICES[family]
+                and state.get('role', 'generator') == 'generator')
+
+    @staticmethod
+    def protocol_version(value):
+        return isinstance(value, str) and re.fullmatch(r'\d+(?:\.\d+)*(?:[-+][A-Za-z0-9.-]+)?', value) is not None
+
+    @staticmethod
+    def generator_busy(state):
+        queue = state.get('queue') or {}
+        counts = state.get('queue_counts') or queue.get('counts') or {}
+        stages = (state.get('status'), state.get('stage'), queue.get('stage'))
+        return bool(state.get('busy') or state.get('active_job') or state.get('loading')
+                    or state.get('switching') or state.get('previewing')
+                    or queue.get('running') or counts.get('running')
+                    or any(stage in BUSY_GENERATOR_STAGES for stage in stages))
+
+    @staticmethod
+    def runtime_healthy(state):
+        storage = state.get('queue_storage') or {}
+        return (state.get('status') in NORMAL_GENERATOR_STAGES
+                and not (state.get('queue') or {}).get('error')
+                and not state.get('runtime_errors')
+                and storage.get('status', 'ready') == 'ready')
 
     def health(self, item):
         key = (item['id'], item['root'], item['port'])
@@ -233,8 +274,11 @@ class Controller:
             value = state.get(key)
             for reason in value if isinstance(value, list) else [value]:
                 if reason and str(reason) not in reasons: reasons.append(str(reason))
-        error = state.get('queue', {}).get('error')
+        error = (state.get('queue') or {}).get('error')
         if error and str(error) not in reasons: reasons.append(str(error))
+        storage = state.get('queue_storage') or {}
+        if storage.get('status', 'ready') != 'ready':
+            reasons.append(str(storage.get('message') or 'Queue storage is unavailable.'))
         if not reasons:
             stage = str(state.get('status', 'unknown'))
             if stage == 'loading': return 'Starting: loading the model.'
@@ -249,17 +293,30 @@ class Controller:
         running = state is not None or bool(pids) or launcher
         healthy = False
         detail = 'Not started.'
+        runtime = bool(state and state.get('runtime_model_switching') is True and item['id'] in GENERATOR_SERVICES)
+        active_model = None
+        busy = False
         if state is not None:
             if item['id'] == 'bridge': healthy = True
             elif item['id'].endswith('queue'): healthy = state.get('status') == 'ready'
-            elif item['id'] == 'image': healthy = state.get('status') == 'ready' and not state.get('queue', {}).get('error')
-            else:
-                healthy = bool(state.get('downloaded')) and not state.get('asset_errors') and not state.get('runtime_errors') and state.get('status') != 'error' and not state.get('last_error')
+            else: healthy = self.runtime_healthy(state)
             detail = ('Healthy' if healthy else 'Needs attention') + ' · ' + str(state.get('status', 'ready'))
             if not healthy: detail = self.health_problem(state)
-            if state.get('busy'): detail += ' · Busy'
-            if state.get('model'): detail += ' · ' + state['model']
-            elif item['id'] == 'voice': detail += ' · ' + state.get('service', '')
+            busy = self.generator_busy(state) if item['id'] in GENERATOR_SERVICES else False
+            if busy: detail += ' · Busy'
+            if runtime:
+                active_model = state.get('active_model')
+                active_model = active_model if isinstance(active_model, str) else None
+                detail += '\nActive: ' + str(active_model or 'None loaded')
+                queue = state.get('queue') or {}
+                stage = queue.get('stage') or state.get('stage')
+                if stage: detail += '\nStage: ' + str(stage)
+                counts = queue.get('counts') or state.get('queue_counts') or queue
+                count_text = [str(counts[key]) + ' ' + key for key in ('waiting', 'queued', 'running', 'blocked')
+                              if type(counts.get(key)) is int]
+                if count_text: detail += '\nQueue: ' + ' · '.join(count_text)
+                blocked = queue.get('blocked_reason')
+                if blocked: detail += '\nWaiting: ' + str(blocked)
         elif running:
             detail = 'Starting: waiting for the health endpoint.' if launcher and not record.get('ready') else 'Service is running, but its health endpoint is not responding.'
             if not (launcher and not record.get('ready')):
@@ -276,7 +333,8 @@ class Controller:
                           if any(word in line.lower() for word in ('error', 'exception', 'failed', 'missing'))]
                 detail = 'Service exited: ' + errors[-1] if errors else 'Not running. The service has exited.'
         return dict(id=item['id'], name=item['name'], running=running, healthy=healthy,
-                    detail=detail, port=item['port'], state=state, pids=pids)
+                    detail=detail, port=item['port'], state=state, pids=pids,
+                    runtime_model_switching=runtime, active_model=active_model, busy=busy)
 
     def resolve(self, identifier, processes=None):
         record = read_json(self.active_file(identifier))
@@ -292,11 +350,12 @@ class Controller:
         processes = self.processes()
         with ThreadPoolExecutor(max_workers=5) as pool:
             statuses = list(pool.map(lambda identifier: self.resolve(identifier, processes)[1], IDS))
-        return {'ok': True, 'services': [{k: s[k] for k in ('id', 'name', 'running', 'healthy', 'detail', 'port')} for s in statuses]}
+        return {'ok': True, 'services': [{k: s[k] for k in ('id', 'name', 'running', 'healthy', 'detail', 'port',
+                    'runtime_model_switching', 'active_model', 'busy')} for s in statuses]}
 
     def save(self, patch):
         with self.lock('configuration'):
-            self.config = validate(read_json(self.config_file, defaults()))
+            self.config = self.load_config()
             proposed = copy.deepcopy(self.config)
             identifier = patch['id']
             original = self.item(identifier)
@@ -333,10 +392,11 @@ class Controller:
             command = [str(path(item['binary'])), '--home', str(root), '--port', str(item['port'])]
             if item['log_file_only']: command.append('--log-file-only')
             return command + ['serve'], env
+        for key in MODEL_ENV_KEYS: env.pop(key, None)
         command = ['/usr/bin/make', 'queue' if identifier.endswith('queue') else 'serve', 'NONINTERACTIVE=1']
         if identifier.endswith('queue'): command += ['QUEUE_PORT=' + str(item['port'])]
         else:
-            command += ['MODEL=' + item['model'], 'PORT=' + str(item['port']), 'QUEUE_PORT=' + str(item['queue_port']), 'NO_LLM=' + str(int(not item['llm']))]
+            command += ['PORT=' + str(item['port']), 'QUEUE_PORT=' + str(item['queue_port']), 'NO_LLM=' + str(int(not item['llm']))]
             if identifier == 'image': command += ['NO_LORAS=' + str(int(not item['loras']))]
         return command, env
 
@@ -434,8 +494,16 @@ class Controller:
             if state is None: raise ValueError('ai-bridge is not responding. No forced termination was sent.')
             self.request(item, '/v1/shutdown', 'POST', {})
         else:
-            if state and state.get('busy'):
-                raise ValueError('This generator is busy. Let the current job finish, then switch it off.')
+            if identifier in GENERATOR_SERVICES:
+                if state and self.generator_busy(state):
+                    raise ValueError('This generator is busy. Let the current job, model switch, or preview finish, then switch it off.')
+                # Recheck work immediately before shutdown; switching models never
+                # authorizes interrupting a batch or restarting the generator.
+                current = self.health(item)
+                if current and self.generator_busy(current):
+                    raise ValueError('This generator is busy. Let the current job, model switch, or preview finish, then switch it off.')
+                if current is None:
+                    raise ValueError('Could not confirm that the generator is idle. No termination was sent; refresh and try again.')
             pids = status['pids']
             if not pids: raise ValueError('Service is still starting. Wait for it to become ready before stopping.')
             if len(pids) != 1: raise ValueError('Cannot identify a single service process; no termination was sent.')

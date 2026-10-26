@@ -18,6 +18,8 @@ Status updates every **15 seconds** while the popover is open and focused, and e
 
 Starting a generator also starts or reuses its queue. Stopping the generator leaves the queue running. A busy generator will ask you to wait for its current job before stopping. Stopping AI Bridge also ends any provider work it is running.
 
+Each generator handles all ready models through one shared queue and loads the requested model at runtime. Changing models between jobs keeps the same service, port, and performance history. Hover over its health dot to see the active model and current stage. An idle generator with no model loaded is healthy.
+
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
 ## Performance history
@@ -36,13 +38,13 @@ CPU and memory include the tool’s running child processes. CPU uses the Activi
 
 Click the gear beside a row to change its startup options. For a generator, choose **Service settings…** or **Queue settings…**.
 
-![Image Generator startup settings with model selection, ports, Prompt LLM and LoRAs switches, and an expandable Paths and environment section](docs/images/startup-settings.jpg)
+![Image Generator startup settings with ports, Prompt LLM and LoRAs switches, and an expandable Paths and environment section](docs/images/startup-settings.jpg)
 
-Choose a model, change ports, or adjust startup features. Expand **Paths & environment** for project folders, executables, and environment overrides.
+Change ports or adjust startup features. Model selection happens in the generator UI/API when you submit work; the monitor has no model picker or default-model setting. Expand **Paths & environment** for project folders, executables, and environment overrides.
 
 Click **Save** to apply your choices the next time you start that service. Saving does not restart it. Going back discards unsaved edits. A generator and its queue share their project folder and queue port.
 
-The [configuration reference](docs/REFERENCE.md) lists every option, default port, and supported model.
+The [configuration reference](docs/REFERENCE.md) lists every startup option and default port.
 
 ## Install
 
@@ -51,6 +53,8 @@ You’ll need:
 - An Apple Silicon Mac running macOS 13 or later.
 - Xcode Command Line Tools and Homebrew Python at `/opt/homebrew/bin/python3`.
 - AI Bridge, ImageGen-Service, and VoiceGen-Service already installed, with the model runtimes you want to use. Daemon Monitor uses those installations; model setup and downloads happen in the services themselves.
+
+Image and Voice Generator must support the shared queue and runtime model switching health contract described in the [configuration reference](docs/REFERENCE.md#image-and-voice).
 
 ```sh
 git clone https://github.com/ashwinmahesh/DaemonMonitor.git

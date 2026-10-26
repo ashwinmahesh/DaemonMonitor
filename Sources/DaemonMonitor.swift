@@ -8,6 +8,14 @@ struct ServiceStatus: Decodable, Identifiable {
     var healthy: Bool
     var detail: String
     let port: Int
+    var runtime_model_switching: Bool? = nil
+    var active_model: String? = nil
+    var busy: Bool? = nil
+
+    var activeModelSummary: String? {
+        guard runtime_model_switching == true else { return nil }
+        return "Active model: \(active_model ?? "None loaded")"
+    }
 }
 
 struct ServiceSettings: Codable, Identifiable {
@@ -15,7 +23,6 @@ struct ServiceSettings: Codable, Identifiable {
     let name: String
     var port: Int
     var root: String
-    var model: String?
     var binary: String?
     var llm: Bool?
     var loras: Bool?
@@ -216,10 +223,12 @@ struct StatusDot: NSViewRepresentable {
     let healthy: Bool
     let reason: String
     let port: Int
+    var context: String? = nil
 
     func makeNSView(context: Context) -> HoverDot { HoverDot() }
     func updateNSView(_ view: HoverDot, context: Context) {
-        view.configure(healthy: healthy, reason: healthy ? "Running on port \(port)" : reason)
+        let healthyText = "Running on port \(port)" + (self.context.map { "\n" + $0 } ?? "")
+        view.configure(healthy: healthy, reason: healthy ? healthyText : reason)
     }
     static func dismantleNSView(_ view: HoverDot, coordinator: ()) { view.dismissTooltip() }
 
@@ -424,7 +433,8 @@ struct ServiceFamilyRow: View {
     var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 5) {
-                StatusDot(healthy: service.healthy, reason: service.detail, port: service.port)
+                StatusDot(healthy: service.healthy, reason: service.detail, port: service.port,
+                          context: service.runtime_model_switching == true ? service.detail : nil)
                     .frame(width: 8, height: 20)
                 Button { monitor.showPerformance(service.id) } label: {
                     HStack(spacing: 4) {
@@ -480,6 +490,7 @@ struct SettingsView: View {
     @State private var port: String
     @State private var queuePort: String
     private var generator: Bool { value.id == "image" || value.id == "voice" }
+    private var liveStatus: ServiceStatus? { monitor.statuses.first(where: { $0.id == value.id }) }
     private var title: String {
         if value.id == "bridge" { return "AI Bridge" }
         return value.id.hasPrefix("image") ? "Image Generator" : "Voice Generator"
@@ -519,23 +530,6 @@ struct SettingsView: View {
                 .accessibilityLabel(title)
         }
     }
-    private var modelPicker: some View {
-        Picker("Model", selection: Binding(get: { value.model ?? "" }, set: { value.model = $0 })) {
-            if value.id == "image" {
-                Text("Z-Image Turbo").tag("z-image-turbo")
-                Text("Chroma1-HD").tag("chroma1-hd")
-                Text("Chroma1-Flash").tag("chroma1-flash")
-            } else {
-                Text("Higgs TTS 3").tag("higgs")
-                Text("VoxCPM2").tag("voxcpm2")
-                Text("Qwen3-TTS").tag("qwen3")
-                Text("Chatterbox Original").tag("chatterbox")
-                Text("IndexTTS").tag("indextts")
-                Text("MOSS").tag("moss")
-                Text("Fish").tag("fish")
-            }
-        }.labelsHidden().font(.system(size: 12)).controlSize(.small)
-    }
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
@@ -552,7 +546,6 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 8) {
-                        if generator { formRow("Model") { modelPicker } }
                         portRow("Port", $port)
                         if generator {
                             portRow("Queue port", $queuePort)
@@ -567,6 +560,10 @@ struct SettingsView: View {
                     }
                     .padding(10)
                     .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    if let summary = liveStatus?.activeModelSummary {
+                        Text(summary).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).help(liveStatus?.detail ?? summary)
+                    }
                     DisclosureGroup(isExpanded: $monitor.settingsExpanded) {
                         VStack(alignment: .leading, spacing: 8) {
                             pathRow(value.id == "bridge" ? "State folder" : "Project", $value.root)
@@ -587,7 +584,7 @@ struct SettingsView: View {
                     }
                     if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil } }
                 }.padding(.top, 1)
-            }.scrollIndicators(.hidden)
+            }.scrollIndicators(.never)
             HStack(spacing: 8) {
                 Button("Logs") { monitor.openLogs(value.id) }.buttonStyle(.borderless).controlSize(.small)
                 Spacer()
@@ -728,9 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let id = monitor.performanceID {
             popover.contentSize = NSSize(width: 400, height: monitor.family(id) == "bridge" ? 474 : 506)
         } else if let id = monitor.selectedID {
-            let base: CGFloat = id == "image" ? 304 : id == "voice" ? 274 : id == "bridge" ? 218 : 188
+            let base: CGFloat = id == "image" ? 274 : id == "voice" ? 244 : id == "bridge" ? 218 : 188
             let extra: CGFloat = monitor.settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
-            popover.contentSize = NSSize(width: 360, height: base + extra + (monitor.error == nil ? 0 : 76))
+            let modelInfo: CGFloat = monitor.statuses.first(where: { $0.id == id })?.activeModelSummary == nil ? 0 : 32
+            popover.contentSize = NSSize(width: 360, height: base + extra + modelInfo + (monitor.error == nil ? 0 : 76))
         } else {
             popover.contentSize = NSSize(width: 320, height: monitor.notice == nil ? 160 : 244)
         }

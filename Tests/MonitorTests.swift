@@ -6,11 +6,12 @@ enum MonitorTests {
     final class FakeHelper {
         struct Request {
             let arguments: [String]
+            let input: Data?
             let completion: Helper.Completion
         }
         var requests: [Request] = []
         func call(_ arguments: [String], _ input: Data?, _ completion: @escaping Helper.Completion) {
-            requests.append(Request(arguments: arguments, completion: completion))
+            requests.append(Request(arguments: arguments, input: input, completion: completion))
         }
         func reply(_ arguments: [String], _ result: Result<Data, Error>) {
             guard let index = requests.firstIndex(where: { $0.arguments == arguments }) else {
@@ -175,6 +176,37 @@ enum MonitorTests {
         precondition(monitor.serviceUIURL("image") == nil, "Stopped generators must not offer an unavailable UI")
     }
 
+    static func runtimeModelStatus() {
+        let fake = FakeHelper()
+        let monitor = Monitor(helper: fake.call)
+        for active in ["\"chroma1-hd\"", "\"flux2-klein-4b\"", "null"] {
+            monitor.refresh()
+            fake.reply(["status"], .success(Data("""
+            {"services":[{"id":"image","name":"Image gen service","running":true,"healthy":true,
+            "detail":"Healthy · ready","port":5732,"runtime_model_switching":true,
+            "active_model":\(active),"busy":false}]}
+            """.utf8)))
+            let status = monitor.statuses[0]
+            precondition(monitor.isOn("image") && status.healthy)
+            precondition(status.activeModelSummary == "Active model: \(status.active_model ?? "None loaded")")
+            precondition(fake.requests.isEmpty, "An active-model change must never issue a start/stop action")
+        }
+    }
+
+    static func saveStartupWithoutModel() {
+        let fake = FakeHelper()
+        let monitor = Monitor(helper: fake.call)
+        let settings = ServiceSettings(id: "image", name: "Image", port: 5732, root: "/test/image",
+            binary: nil, llm: true, loras: true, log_file_only: nil, environment: "")
+        monitor.save(settings, port: "5732", queuePort: "55302")
+        let input = try! JSONSerialization.jsonObject(with: fake.requests[0].input!) as! [String: Any]
+        precondition(input["model"] == nil, "Startup settings must not send a model override")
+        fake.reply(["save"], success)
+        fake.reply(["config"], .success(Data("{\"services\":[]}".utf8)))
+        fake.reply(["status"], snapshot(false))
+        precondition(fake.requests.isEmpty, "Saving startup settings must never restart or switch a generator")
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -187,6 +219,8 @@ enum MonitorTests {
         tooltipWrapping()
         statusRecovery()
         browserEndpoints()
-        print("Passed 12 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, tooltip layout, and browser endpoints.")
+        runtimeModelStatus()
+        saveStartupWithoutModel()
+        print("Passed 14 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, tooltip layout, browser endpoints, runtime models, and startup settings.")
     }
 }

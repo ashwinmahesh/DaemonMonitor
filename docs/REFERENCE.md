@@ -9,14 +9,14 @@ Saved settings take effect on the next explicit start. Running services continue
 | Control | Available options | Defaults |
 | --- | --- | --- |
 | AI Bridge | State folder (`--home`), executable, port, file-only logging, environment | Existing `local.ai-bridge.api` login service; port 8765 |
-| Image service | Project folder, model, port, queue port, prompt LLM, LoRAs, environment | Z-Image Turbo; port 5732; queue 55302; prompt LLM and LoRAs on |
+| Image service | Project folder, port, queue port, prompt LLM, LoRAs, environment | Port 5732; queue 55302; prompt LLM and LoRAs on |
 | Image queue | Project folder, port, environment | Port 55302 |
-| Voice service | Project folder, model/backend, port, queue port, prompt LLM, environment | Higgs; port 5743; queue 55205; prompt LLM on |
+| Voice service | Project folder, port, queue port, prompt LLM, environment | Port 5743; queue 55205; prompt LLM on |
 | Voice queue | Project folder, port, environment | Port 55205 |
 
 The default project folders are `~/Documents/models/ImageGen-Service` and `~/Documents/models/VoiceGen-Service`. Set a different folder under **Paths & environment** if needed.
 
-Supported image models are Z-Image Turbo, Chroma1-HD, and Chroma1-Flash. Supported voice backends are Higgs, VoxCPM2, Qwen3-TTS, Chatterbox, IndexTTS, MOSS, and Fish. Each choice requires its runtime and model assets to be installed already. Startup never runs setup or download commands.
+Generators select and load models at runtime for each job. The monitor has no model picker, model registry, or default-model configuration, and never passes `MODEL` to `make serve`. Obsolete monitor model values are ignored and removed from configuration on the next save. Startup never runs setup or downloads; saving monitor settings never switches a backend or restarts a running service.
 
 A generator and its queue share a project folder and queue port. Saving either value updates both configurations. All five ports must be distinct and between 1024 and 65535. Stop a running queue before starting a generator against a newly configured queue port or folder.
 
@@ -26,11 +26,11 @@ Enter one literal `KEY=value` per line. Empty lines and lines starting with `#` 
 
 These overrides expose additional environment-based options supported by the services, such as `DATA_DIR`, `OUTPUT_DIR`, `WEIGHTS_DIR`, `GPU_LOCK_FILE`, `PROMPT_LLM_DIR`, `VENV`, and `QUEUE_PYTHON`. Existing project `storage.json` and runtime choices remain in effect unless explicitly overridden.
 
-Use the form controls for `MODEL`, `PORT`, `QUEUE_PORT`, `NO_LLM`, and `NO_LORAS`; those keys cannot be overridden here. `HOME` and `PATH` overrides are also rejected.
+Use the form controls for `PORT`, `QUEUE_PORT`, `NO_LLM`, and `NO_LORAS`; those keys cannot be overridden here. `HOME` and `PATH` overrides are also rejected. Model-selection keys (`MODEL`, `IMAGE_MODEL`, `MODEL_BACKEND`, `DEFAULT_MODEL`) are rejected in overrides and stripped from the generator/queue's inherited environment so they cannot pin a runtime model.
 
 ## Health and service control
 
-Health dots reflect the service’s health API. Switches track processes separately, so a running but unhealthy service can still be switched off. Voice model weights being unloaded or loading is normal when the voice API is otherwise ready.
+Health dots reflect the service’s health API. Switches track processes separately. Model weights being unloaded, loading, switching, or processing a job is normal while the generator API and queue storage are healthy. A failed earlier job or a waiting job blocked by missing assets does not by itself turn the entire generator red. Storage and consumer failures do.
 
 Hover over a dot, or click it, to see its status. Startup and exit failures are remembered across monitor restarts. They clear after a successful start or an explicit stop. A service that does not become ready within four minutes remains visible for inspection; the monitor does not keep restarting it.
 
@@ -38,11 +38,15 @@ Status refreshes every 15 seconds while the popover is open, active, and focused
 
 ### Image and voice
 
-Generators use their existing noninteractive `make serve` launchers. These preserve each project’s readiness checks, model selection, storage, and startup modes, and start or reuse the corresponding queue. Queue switches independently control the queue HTTP processes.
+Generators use their existing noninteractive `make serve` launchers and preserve each project's ready-model preflight, storage, and startup options. `NO_LLM=0` keeps prompt expansion on; `NO_LLM=1` opts out. One generator consumes all eligible models from one project-local durable queue. The queue switch independently controls its lightweight CRUD HTTP API; it does not switch model queues or workers.
 
-Stopping a generator leaves its queue available. Stopping the image queue can make the running image UI’s queue routes unavailable until the queue starts again. The monitor does not cancel, clear, or delete jobs.
+Stopping a generator leaves its queue available. A running generator reads and writes the shared SQLite queue directly, so its UI and job routes keep working while the standalone queue HTTP service is off. The monitor never migrates, cancels, clears, or deletes jobs or media.
 
-Busy generators refuse stop requests. Idle generators and queues receive SIGTERM only after the monitor checks the Python command, project working directory, port, and process identity. It ignores processes from other checkouts or test ports and does not force-kill them.
+Generator health must identify `imagegen-generator` or `voicegen-generator`, report `runtime_model_switching: true`, `queue_scope: shared`, a numeric dotted `version`, and the configured project (`project_dir` for image, `project` for voice). An optional `role` must be `generator`. Queue health identifies `imagegen-queue` or `voicegen-queue`, the same shared scope/version/project, and `role: queue-crud` for voice. Model-bound health contracts and identity aliases are not supported.
+
+`active_model` is nullable and describes the selected/loaded backend. It is read-only information in generator tooltips and startup settings, and is never used to identify a process. Global queue counts, stage, and a blocked reason appear in the tooltip when supplied.
+
+Busy generators refuse stop requests, including model loading, switching, expansion and preview work. The monitor rechecks health before stopping and refuses to terminate a runtime generator whose idle state cannot be confirmed. Idle generators and queues receive SIGTERM only after checks of the Python command, project working directory, port, and process identity. Processes from other checkouts or test ports are ignored; termination is never forced.
 
 ### AI Bridge
 
@@ -119,6 +123,8 @@ The unit suite uses mocks and temporary local HTTP fixtures. It covers startup a
 The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover status recovery without hiding action errors, browser links using actual running ports, and tooltip layout, including five-digit queue ports and wrapped failure reasons, without operating real services. Process-query fixtures verify one bounded retry, a readable error after repeated timeouts, and preservation of metrics history when discovery fails.
 
 Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses and sampling throttling.
+
+Runtime-model fixtures cover strict service/project/protocol identity, changing or null active models, blocked jobs, storage failures, removal of obsolete model overrides, model-free startup arguments/environment, busy/preview shutdown protection, and backend-child replacement without restarting performance history. They do not load model weights or submit real inference jobs.
 
 For lifecycle changes, run the suite and build the app. Inspect the popover and settings on an available Mac. Preserve existing services and jobs during validation; do not submit inference jobs, clear queues, download models, or force-kill services. Record actual manual checks and limitations in the ignored local `verification.json` file.
 

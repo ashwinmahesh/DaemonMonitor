@@ -19,10 +19,11 @@ class ControllerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.controller = control.Controller(Path(self.temp.name))
 
-    def test_model_and_queue_startup_arguments(self):
-        for identifier, model in [('image', 'z-image-turbo'), ('voice', 'higgs')]:
-            command, env = self.controller.start_command(self.controller.desired(identifier))
-            self.assertIn('MODEL=' + model, command)
+    def test_generator_and_queue_startup_arguments(self):
+        for identifier in ('image', 'voice'):
+            item = self.controller.desired(identifier)
+            command, env = self.controller.start_command(item)
+            self.assertFalse(any(argument.startswith('MODEL=') for argument in command))
             self.assertIn('NO_LLM=0', command)
             self.assertIn('QUEUE_PORT=' + str(self.controller.item(identifier + '-queue')['port']), command)
             self.assertEqual(command[:2], ['/usr/bin/make', 'serve'])
@@ -51,18 +52,17 @@ class ControllerTests(unittest.TestCase):
 
     def test_advanced_flags_are_literal_arguments(self):
         item = self.controller.desired('image')
-        item.update(llm=False, loras=False, model='chroma1-flash', environment='DATA_DIR=/some path/$(touch hacked)\nVENV=/a venv')
+        item.update(llm=False, loras=False, environment='DATA_DIR=/some path/$(touch hacked)\nVENV=/a venv')
         command, env = self.controller.start_command(item)
         self.assertIn('NO_LLM=1', command)
         self.assertIn('NO_LORAS=1', command)
-        self.assertIn('MODEL=chroma1-flash', command)
+        self.assertFalse(any(argument.startswith('MODEL=') for argument in command))
         self.assertEqual(env['DATA_DIR'], '/some path/$(touch hacked)')
         self.assertEqual(env['VENV'], '/a venv')
 
-    def test_ports_and_models_are_validated(self):
+    def test_ports_and_flags_are_validated(self):
         for mutate in [lambda c: c['services'][0].update(port=0),
                        lambda c: c['services'][1].update(port=8765),
-                       lambda c: c['services'][1].update(model='invalid'),
                        lambda c: c['services'][1].update(llm='false')]:
             config = control.defaults(); mutate(config)
             with self.assertRaises(ValueError): control.validate(config)
@@ -73,10 +73,127 @@ class ControllerTests(unittest.TestCase):
 
     def test_health_matches_checkout_and_service_identity(self):
         image = self.controller.desired('image-queue')
-        state = {'service': 'imagegen-queue', 'project_dir': str(control.path(image['root']))}
+        state = {'service': 'imagegen-queue', 'project_dir': str(control.path(image['root'])), 'version':'4.0.0', 'queue_scope':'shared'}
         self.assertTrue(self.controller.matches(image, state))
         self.assertFalse(self.controller.matches(image, {**state, 'project_dir': '/other/project'}))
         self.assertFalse(self.controller.matches(image, {**state, 'service': 'voicegen-queue'}))
+
+    def runtime_state(self, identifier='image', **updates):
+        item = self.controller.desired(identifier)
+        state = {'service': identifier + 'gen-generator', 'role': 'generator', 'version': '4.0.0',
+                 'runtime_model_switching': True, 'queue_scope':'shared', 'status': 'ready', 'busy': False,
+                 'active_model': None, 'queue': {'stage': 'idle', 'running': 0, 'waiting': 2},
+                 'queue_storage': {'status': 'ready'},
+                 'project_dir' if identifier == 'image' else 'project': str(control.path(item['root']).resolve())}
+        return {**state, **updates}
+
+    def test_runtime_identity_is_independent_of_the_active_model(self):
+        for identifier in ('image', 'voice'):
+            item = self.controller.desired(identifier)
+            for active in (None, 'some-future-ready-model', 'chroma1-flash'):
+                state = self.runtime_state(identifier, active_model=active)
+                self.assertTrue(self.controller.matches(item, state))
+                with patch.object(self.controller, 'request', return_value=state), patch.object(self.controller, 'owned_processes', return_value=[123]):
+                    status = self.controller.inspect(item)
+                self.assertTrue(status['running']); self.assertTrue(status['healthy'])
+                self.assertEqual(status['active_model'], active)
+                self.assertNotIn('Default:', status['detail'])
+                self.assertIn('Active: ' + (active or 'None loaded'), status['detail'])
+
+    def test_runtime_identity_requires_project_service_mode_and_version(self):
+        for identifier in ('image', 'voice'):
+            item = self.controller.desired(identifier)
+            state = self.runtime_state(identifier)
+            key = 'project_dir' if identifier == 'image' else 'project'
+            for patch_value in ({key:'/other/project'}, {'service':'unrelated'}, {'service':identifier+'gen-queue'},
+                                {'runtime_model_switching':False}, {'runtime_model_switching':'true'},
+                                {'role':'queue-crud'}, {'version':None}, {'version':'not-a-version'}, {'queue_scope':'model'}):
+                self.assertFalse(self.controller.matches(item, {**state, **patch_value}), patch_value)
+
+    def test_model_bound_health_is_rejected(self):
+        image = self.controller.desired('image')
+        voice = self.controller.desired('voice')
+        for model in ('z-image-turbo', 'chroma1-hd', 'flux2-klein-4b'):
+            self.assertFalse(self.controller.matches(image, {'project_dir':str(control.path(image['root'])), 'model':model}))
+        for model in ('higgs', 'voxcpm2'):
+            self.assertFalse(self.controller.matches(voice, {'project':str(control.path(voice['root'])), 'service':model}))
+
+    def test_obsolete_monitor_model_values_are_not_forwarded(self):
+        obsolete = control.defaults()
+        for item in obsolete['services']:
+            if item['id'] in ('image','voice'): item['model']='obsolete-model'
+        control.atomic_json(self.controller.config_file, obsolete)
+        controller = control.Controller(self.temp.name)
+        for identifier in ('image','voice'):
+            self.assertNotIn('model', controller.desired(identifier))
+            command, env = controller.start_command(controller.desired(identifier))
+            self.assertFalse(any(argument.startswith('MODEL=') for argument in command))
+            self.assertIn('NO_LLM=0', command)
+        with self.assertRaisesRegex(ValueError, 'Unknown setting'):
+            controller.save({'id':'image','model':'z-image-turbo'})
+        with patch.object(controller, 'resolve', side_effect=lambda identifier: (controller.desired(identifier), {'running':False})):
+            controller.save({'id':'image','port':5732})
+        self.assertTrue(all('model' not in item for item in control.read_json(controller.config_file)['services']))
+
+    def test_inherited_model_environment_is_not_forwarded(self):
+        inherited = dict.fromkeys(control.MODEL_ENV_KEYS, 'unwanted-model')
+        with patch.dict(control.os.environ, inherited):
+            for identifier in ('image','voice','image-queue','voice-queue'):
+                command, env = self.controller.start_command(self.controller.desired(identifier))
+                self.assertTrue(all(key not in env for key in inherited))
+        for key in inherited:
+            with self.assertRaisesRegex(ValueError, 'managed by the generator'):
+                control.environment(key+'=unwanted-model')
+    def test_runtime_loading_switching_and_blocked_jobs_are_normal(self):
+        for identifier in ('image', 'voice'):
+            item = self.controller.desired(identifier)
+            for stage in ('ready', 'unloaded', 'loading', 'switching', 'expanding', 'rendering', 'previewing', 'waiting', 'blocked'):
+                state = self.runtime_state(identifier, status=stage, last_error='A previous job failed',
+                    queue={'stage':stage, 'waiting':3, 'blocked':1, 'blocked_reason':'Model assets are unavailable'},
+                    queue_api={'status':'unavailable'}, queue_service={'status':'unavailable'})
+                with patch.object(self.controller, 'health', return_value=state), patch.object(self.controller, 'owned_processes', return_value=[123]):
+                    status = self.controller.inspect(item)
+                self.assertTrue(status['healthy'], stage)
+                self.assertIn('3 waiting', status['detail'])
+                self.assertIn('1 blocked', status['detail'])
+                self.assertIn('Model assets are unavailable', status['detail'])
+
+    def test_runtime_storage_and_worker_failures_remain_red(self):
+        item = self.controller.desired('image')
+        for updates in ({'status':'error'}, {'queue':{'error':'Consumer stopped'}},
+                        {'queue_storage':{'status':'unavailable','message':'SQLite is locked'}}):
+            with patch.object(self.controller, 'health', return_value=self.runtime_state(**updates)), patch.object(self.controller, 'owned_processes', return_value=[123]):
+                status = self.controller.inspect(item)
+            self.assertTrue(status['running']); self.assertFalse(status['healthy'])
+        self.assertIn('SQLite is locked', status['detail'])
+
+    def test_start_existing_runtime_generator_never_switches_or_restarts_it(self):
+        item = self.controller.desired('image')
+        state = self.runtime_state(active_model='chroma1-hd', busy=True)
+        with patch.object(self.controller, 'resolve', return_value=(item, {'running':True,'state':state})), \
+             patch.object(self.controller, 'start_command') as command, patch.object(control.subprocess, 'Popen') as spawn, \
+             patch.object(control.os, 'kill') as kill:
+            self.assertTrue(self.controller.start('image')['ok'])
+        command.assert_not_called(); spawn.assert_not_called(); kill.assert_not_called()
+
+    def test_runtime_busy_loading_preview_and_queue_work_refuse_stop(self):
+        item = self.controller.desired('image')
+        updates = ({'busy':True}, {'status':'loading'}, {'queue':{'stage':'expanding'}},
+                   {'previewing':True}, {'active_job':'job-123'}, {'queue_counts':{'running':1}})
+        for update in updates:
+            state = self.runtime_state(**update)
+            with patch.object(self.controller, 'resolve', return_value=(item, {'running':True,'state':state,'pids':[123]})), patch.object(control.os, 'kill') as kill:
+                with self.assertRaisesRegex(ValueError, 'busy'): self.controller.stop('image')
+            kill.assert_not_called()
+
+    def test_runtime_stop_rechecks_busy_and_refuses_unknown_state(self):
+        item = self.controller.desired('voice')
+        state = self.runtime_state('voice')
+        for current in (self.runtime_state('voice', busy=True), None):
+            with patch.object(self.controller, 'resolve', return_value=(item, {'running':True,'state':state,'pids':[123]})), \
+                 patch.object(self.controller, 'health', return_value=current), patch.object(control.os, 'kill') as kill:
+                with self.assertRaises(ValueError): self.controller.stop('voice')
+            kill.assert_not_called()
 
     def test_voice_unloaded_is_healthy_but_runtime_errors_are_red(self):
         voice = self.controller.desired('voice')
@@ -150,7 +267,7 @@ class ControllerTests(unittest.TestCase):
     def test_reused_pid_is_not_signalled(self):
         item = self.controller.desired('image')
         status = dict(running=True, state={}, pids=[123])
-        with patch.object(self.controller, 'resolve', return_value=(item, status)), patch.object(self.controller, 'fingerprint', return_value='old'), patch.object(self.controller, 'owned_processes', return_value=[]), patch.object(control.os, 'kill') as kill:
+        with patch.object(self.controller, 'resolve', return_value=(item, status)), patch.object(self.controller, 'health', return_value={'status':'ready'}), patch.object(self.controller, 'fingerprint', return_value='old'), patch.object(self.controller, 'owned_processes', return_value=[]), patch.object(control.os, 'kill') as kill:
             with self.assertRaisesRegex(ValueError, 'changed'): self.controller.stop('image')
             kill.assert_not_called()
 

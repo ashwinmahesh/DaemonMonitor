@@ -52,6 +52,18 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(groups['image-queue'], {11, 12})
         self.assertEqual(groups['bridge'], {20, 21})
 
+    def test_backend_switch_follows_new_children_without_restarting_history(self):
+        first = self.sample()['image']
+        del self.table[13]
+        self.table[14] = {'parent':10, 'command':'python backend_runtime.py --model chroma1-hd'}
+        self.usage[14] = {'start':1400, 'cpu':1, 'memory':14*1024}
+        switched = self.sample(60)['image']
+        self.assertEqual(switched['run'], first['run'])
+        self.assertEqual(switched['processes'], 2)
+        self.assertEqual(switched['memory'], (10+14)*1024)
+        self.assertIsNone(switched['cpu'])
+        self.assertEqual(metrics.service_processes(self.controller, self.table)['image-queue'], {11,12})
+
     def test_metrics_process_list_retries_a_transient_timeout(self):
         command = ['/bin/ps', '-axo', 'pid=,ppid=,uid=,command=']
         result = control.subprocess.CompletedProcess(command, 0, stdout=f'123 1 {os.getuid()} python server.py\n')
