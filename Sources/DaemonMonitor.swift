@@ -204,7 +204,7 @@ struct StatusDot: NSViewRepresentable {
             setAccessibilityLabel(healthy ? "Healthy" : reason)
             needsDisplay = true
             dismissTooltip()
-            if hovered && !healthy { scheduleTooltip() }
+            if hovered { scheduleTooltip() }
         }
         override func draw(_ dirtyRect: NSRect) {
             (healthy ? NSColor.systemGreen : NSColor.systemRed).setFill()
@@ -218,7 +218,6 @@ struct StatusDot: NSViewRepresentable {
             area = next
         }
         override func accessibilityPerformPress() -> Bool {
-            guard !healthy else { return false }
             hovered = true
             showTooltip()
             return true
@@ -228,7 +227,7 @@ struct StatusDot: NSViewRepresentable {
         }
         override func mouseEntered(with event: NSEvent) {
             hovered = true
-            if !healthy { scheduleTooltip() }
+            scheduleTooltip()
         }
         override func mouseExited(with event: NSEvent) {
             hovered = false
@@ -245,9 +244,9 @@ struct StatusDot: NSViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
         }
         private func showTooltip() {
-            guard hovered, !healthy, tooltip == nil, let window, window.isKeyWindow else { return }
+            guard hovered, tooltip == nil, let window, window.isKeyWindow else { return }
             let font = NSFont.systemFont(ofSize: 11)
-            let text = String(reason.prefix(1400))
+            let text = healthy ? "Healthy" : String(reason.prefix(1400))
             let measured = (text as NSString).boundingRect(with: NSSize(width: 260, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
             let size = NSSize(width: max(120, ceil(measured.width)) + 20, height: ceil(measured.height) + 18)
             let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
