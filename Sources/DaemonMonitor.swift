@@ -179,6 +179,7 @@ struct StatusDot: NSViewRepresentable {
             setAccessibilityElement(true)
             setAccessibilityRole(.image)
             setAccessibilityLabel("Not started.")
+            setAccessibilityHelp("Show status details")
             focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] notification in
                 guard let self, let window = notification.object as? NSWindow, window === self.window else { return }
                 self.dismissTooltip()
@@ -209,6 +210,15 @@ struct StatusDot: NSViewRepresentable {
             let next = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
             addTrackingArea(next)
             area = next
+        }
+        override func accessibilityPerformPress() -> Bool {
+            guard !healthy else { return false }
+            hovered = true
+            showTooltip()
+            return true
+        }
+        override func mouseDown(with event: NSEvent) {
+            _ = accessibilityPerformPress()
         }
         override func mouseEntered(with event: NSEvent) {
             hovered = true
@@ -256,7 +266,9 @@ struct StatusDot: NSViewRepresentable {
             panel.contentView = background
             let anchor = window.convertToScreen(convert(bounds, to: nil))
             let screen = window.screen?.visibleFrame ?? anchor.insetBy(dx: -500, dy: -500)
-            let origin = NSPoint(x: min(max(anchor.midX - size.width / 2, screen.minX + 6), screen.maxX - size.width - 6),
+            let left = max(screen.minX + 6, window.frame.minX + 12)
+            let right = min(screen.maxX - 6, window.frame.maxX - 12)
+            let origin = NSPoint(x: min(max(anchor.midX - size.width / 2, left), right - size.width),
                                  y: min(anchor.maxY + 7, screen.maxY - size.height - 6))
             panel.setFrameOrigin(origin)
             window.addChildWindow(panel, ordered: .above)
