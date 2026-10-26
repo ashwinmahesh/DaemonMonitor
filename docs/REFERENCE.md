@@ -80,6 +80,8 @@ There is no privileged helper, continuous profiler, additional login agent, or e
 
 SQLite stores seven days of samples outside the repository, using WAL transactions and private file permissions. PID start times guard against PID reuse. First intervals, counter resets, and long collection gaps remain unknown. No older history is fabricated. Queries return at most 361 averaged points per graph; range peak labels are calculated from the original samples.
 
+Each chart keeps the latest reading immediately to the left of Peak, labeled Now for running tools or Last for stopped tools. Hovering, clicking, or dragging inside the plot centers the nearest sample's value in the header, marks it on the line, and shows its timestamp below. Selection preserves unavailable measurements and gaps between runs; it does not borrow values from a distant sample.
+
 ### Measured overhead
 
 Ten end-to-end collections on the development Mac, with AI Bridge and its helper running and both generators stopped, measured a median **100 ms wall time**, **96 ms CPU time**, and **27.6 MiB peak helper memory**, including Python startup and child commands. The helper exits after each collection. This corresponds to about **0.16% of one CPU core** at the background rate, or **0.64%** at the foreground rate; chart rendering is separate, and more live child processes can add work.
@@ -124,7 +126,7 @@ The unit suite uses mocks and temporary local HTTP fixtures. It covers startup a
 
 The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover status recovery without hiding action errors, browser links using actual running ports, and tooltip layout, including five-digit queue ports and wrapped failure reasons, without operating real services. Process-query fixtures verify one bounded retry, a readable error after repeated timeouts, and preservation of metrics history when discovery fails.
 
-Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses and sampling throttling.
+Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses, sampling throttling, and chart sample selection across missing measurements, run boundaries, and long gaps.
 
 Runtime-model fixtures cover strict service/project/protocol identity, changing or null active models, blocked jobs, storage failures, removal of obsolete model overrides, model-free startup arguments/environment, busy/preview shutdown protection, and backend-child replacement without restarting performance history. They do not load model weights or submit real inference jobs.
 

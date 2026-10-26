@@ -432,16 +432,14 @@ struct ServiceFamilyRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 StatusDot(healthy: service.healthy, reason: service.detail, port: service.port,
                           context: service.runtime_model_switching == true ? service.detail : nil)
                     .frame(width: 8, height: 20)
                 Button { monitor.showPerformance(service.id) } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        if queue == nil {
-                            Image(systemName: "chart.xyaxis.line").font(.system(size: 9)).foregroundStyle(.secondary)
-                        }
+                        Image(systemName: "chart.xyaxis.line").font(.system(size: 9)).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }.buttonStyle(.plain).help("View performance for " + title).accessibilityLabel("Performance for " + title)
                 if queue != nil {

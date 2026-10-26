@@ -47,6 +47,18 @@ struct HistoryReply: Decodable {
     let points: [HistoryPoint]
     let latest: HistoryPoint?
     let peaks: MetricValues
+
+    func sample(near date: Date) -> HistoryPoint? {
+        let time = date.timeIntervalSince1970
+        guard let nearest = points.min(by: { abs($0.timestamp - time) < abs($1.timestamp - time) }),
+              abs(nearest.timestamp - time) <= max(60, resolution) * 1.25 else { return nil }
+        if abs(nearest.timestamp - time) < 0.001 { return nearest }
+        if let before = points.last(where: { $0.timestamp < time }),
+           let after = points.first(where: { $0.timestamp > time }), before.run != after.run {
+            return nil
+        }
+        return nearest
+    }
 }
 
 final class PerformanceMonitor: ObservableObject {
@@ -177,8 +189,10 @@ struct MetricChart: View {
         }
     }
     private var selected: HistoryPoint? {
-        if let hovered { return history?.points.min(by: { abs($0.date.timeIntervalSince(hovered)) < abs($1.date.timeIntervalSince(hovered)) }) }
-        return history?.latest
+        hovered.flatMap { history?.sample(near: $0) }
+    }
+    private func inspect(_ location: CGPoint, proxy: ChartProxy, plot: CGRect) {
+        hovered = plot.contains(location) ? proxy.value(atX: location.x - plot.minX, as: Date.self) : nil
     }
     private var domain: ClosedRange<Date> {
         let end = history.map { Date(timeIntervalSince1970: $0.end) } ?? Date()
@@ -192,16 +206,23 @@ struct MetricChart: View {
         let samples = points
         let segmentCounts = Dictionary(grouping: samples, by: \.segment).mapValues(\.count)
         return VStack(spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: kind.icon).foregroundStyle(kind.color)
-                Text(kind.rawValue).fontWeight(.medium)
-                Spacer()
-                if let history, let peak = kind.peak(history.peaks) {
-                    Text("Peak " + kind.formatted(peak)).font(.system(size: 9)).foregroundStyle(.secondary)
+            ZStack {
+                HStack(spacing: 5) {
+                    Image(systemName: kind.icon).font(.system(size: 11)).foregroundStyle(kind.color)
+                    Text(kind.rawValue).font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Text((running ? "Now " : "Last ") + kind.formatted(history?.latest.flatMap { kind.value($0) }))
+                        .foregroundStyle(kind.color)
+                    if let history, let peak = kind.peak(history.peaks) {
+                        Text("Peak " + kind.formatted(peak)).foregroundStyle(.secondary)
+                    }
+                }.font(.system(size: 9)).monospacedDigit()
+                if hovered != nil {
+                    Text(selected.flatMap { kind.value($0) }.map { kind.formatted($0) } ?? "No sample")
+                        .font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(kind.color)
+                        .accessibilityLabel("Selected " + kind.rawValue)
                 }
-                Text(kind.formatted(selected.flatMap { kind.value($0) }))
-                    .font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(kind.color)
-            }.font(.system(size: 11)).help(kind.help)
+            }.frame(height: 16).help(kind.help)
             Chart {
                 ForEach(samples) { point in
                     LineMark(x: .value("Time", point.timestamp), y: .value(kind.rawValue, point.value),
@@ -213,8 +234,12 @@ struct MetricChart: View {
                     }
                 }
                 if let hovered {
-                    RuleMark(x: .value("Selected time", hovered)).foregroundStyle(Color.secondary.opacity(0.4))
+                    RuleMark(x: .value("Selected time", selected?.date ?? hovered)).foregroundStyle(Color.secondary.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    if let selected, let value = kind.value(selected) {
+                        PointMark(x: .value("Selected time", selected.date), y: .value(kind.rawValue, kind.chartValue(value)))
+                            .foregroundStyle(kind.color).symbolSize(28)
+                    }
                 }
             }
             .chartXScale(domain: domain).chartYScale(domain: 0...upper)
@@ -245,11 +270,22 @@ struct MetricChart: View {
                         .onContinuousHover { phase in
                             switch phase {
                             case .active(let location):
-                                let offset = location.x - geometry[proxy.plotAreaFrame].origin.x
-                                hovered = proxy.value(atX: offset, as: Date.self)
+                                inspect(location, proxy: proxy, plot: geometry[proxy.plotAreaFrame])
                             case .ended: hovered = nil
                             }
                         }
+                        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                            inspect(value.location, proxy: proxy, plot: geometry[proxy.plotAreaFrame])
+                        })
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let hovered {
+                    Text(selected?.date ?? hovered, format: range.duration >= 86400
+                         ? .dateTime.month(.abbreviated).day().hour().minute().second()
+                         : .dateTime.hour().minute().second())
+                        .font(.system(size: 9)).monospacedDigit().padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.regularMaterial, in: Capsule()).allowsHitTesting(false)
                 }
             }
             .overlay {
@@ -259,7 +295,8 @@ struct MetricChart: View {
                 }
             }
             .frame(height: 64)
-            .accessibilityLabel(kind.rawValue + " history. " + kind.formatted(selected.flatMap { kind.value($0) }))
+            .accessibilityLabel(kind.rawValue + " history. " + kind.formatted((hovered == nil ? history?.latest : selected).flatMap { kind.value($0) }))
+            .onDisappear { hovered = nil }
         }.padding(9).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
     }
 }

@@ -207,6 +207,25 @@ enum MonitorTests {
         precondition(fake.requests.isEmpty, "Saving startup settings must never restart or switch a generator")
     }
 
+    static func chartSampleSelection() {
+        func point(_ time: Double, _ cpu: Double, _ run: String, gpu: Double? = 0) -> HistoryPoint {
+            HistoryPoint(timestamp: time, cpu: cpu, memory: cpu * 1_048_576, gpu: gpu, processes: 1, run: run)
+        }
+        let points = [point(1000, 10, "a"), point(1060, 20, "a", gpu: nil),
+                      point(1120, 30, "b"), point(1180, 40, "b"), point(1600, 50, "b")]
+        let history = HistoryReply(id: "image", range: "30m", start: 0, end: 1700,
+            resolution: 15, recording_since: 1000, running: true, points: points,
+            latest: points.last, peaks: MetricValues(cpu: 50, memory: 50 * 1_048_576, gpu: 0))
+        let selected = history.sample(near: Date(timeIntervalSince1970: 1038))!
+        precondition(selected.timestamp == 1060 && selected.cpu == 20)
+        precondition(MetricKind.memory.formatted(selected.memory) == "20 MB")
+        precondition(selected.gpu == nil, "An unavailable metric must not be replaced with another sample")
+        precondition(history.sample(near: Date(timeIntervalSince1970: 1090)) == nil, "Do not select across separate runs")
+        precondition(history.sample(near: Date(timeIntervalSince1970: 1120))?.cpu == 30, "The first point of a new run remains selectable")
+        precondition(history.sample(near: Date(timeIntervalSince1970: 1400)) == nil, "Do not invent values inside a long recording gap")
+        precondition(history.sample(near: Date(timeIntervalSince1970: 9000)) == nil)
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -221,6 +240,7 @@ enum MonitorTests {
         browserEndpoints()
         runtimeModelStatus()
         saveStartupWithoutModel()
-        print("Passed 14 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, tooltip layout, browser endpoints, runtime models, and startup settings.")
+        chartSampleSelection()
+        print("Passed 15 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, and chart inspection.")
     }
 }
