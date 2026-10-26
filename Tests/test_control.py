@@ -105,7 +105,9 @@ class ControllerTests(unittest.TestCase):
 
     def runtime_state(self, identifier='image', **updates):
         item = self.controller.desired(identifier)
-        state = {'service': identifier + 'gen-generator', 'role': 'generator', 'version': '4.0.0',
+        identity = ({'service':'imagegen-generator', 'role':'generator', 'version':'4.0.0'}
+                    if identifier == 'image' else {'service':'voicegen-service', 'mode':'generator', 'api_version':'4.0.0'})
+        state = {**identity,
                  'runtime_model_switching': True, 'queue_scope':'shared', 'status': 'ready', 'busy': False,
                  'active_model': None, 'queue': {'stage': 'idle', 'running': 0, 'waiting': 2},
                  'queue_storage': {'status': 'ready'},
@@ -130,10 +132,32 @@ class ControllerTests(unittest.TestCase):
             item = self.controller.desired(identifier)
             state = self.runtime_state(identifier)
             key = 'project_dir' if identifier == 'image' else 'project'
+            version = 'version' if identifier == 'image' else 'api_version'
+            mode = 'role' if identifier == 'image' else 'mode'
             for patch_value in ({key:'/other/project'}, {'service':'unrelated'}, {'service':identifier+'gen-queue'},
                                 {'runtime_model_switching':False}, {'runtime_model_switching':'true'},
-                                {'role':'queue-crud'}, {'version':None}, {'version':'not-a-version'}, {'queue_scope':'model'}):
+                                {mode:'queue-crud'}, {version:None}, {version:'not-a-version'}, {'queue_scope':'model'}):
                 self.assertFalse(self.controller.matches(item, {**state, **patch_value}), patch_value)
+
+    def test_voice_queue_uses_its_published_api_version_contract(self):
+        item = self.controller.desired('voice-queue')
+        state = {'service':'voicegen-queue', 'role':'queue-crud', 'api_version':'4.0.0',
+                 'queue_scope':'shared', 'project':str(control.path(item['root']).resolve()),
+                 'queue_database':str(control.path(item['root'])/'state/queue.sqlite3'),
+                 'status':'ready', 'default_model':'higgs', 'paused':False}
+        with patch.object(self.controller, 'request', return_value=state), patch.object(self.controller, 'owned_processes', return_value=[]):
+            status = self.controller.inspect(item)
+        self.assertTrue(status['running']); self.assertTrue(status['healthy'])
+        for update in ({'api_version':None}, {'api_version':'invalid'}, {'queue_scope':'model'},
+                       {'project':'/other/project'}, {'service':'imagegen-queue'}, {'role':'generator'}):
+            self.assertFalse(self.controller.matches(item, {**state, **update}), update)
+
+    def test_voice_generator_does_not_accept_invented_image_style_identity(self):
+        item = self.controller.desired('voice')
+        state = self.runtime_state('voice')
+        for update in ({'service':'voicegen-generator'}, {'mode':None}, {'mode':'queue-crud'},
+                       {'api_version':None, 'version':'4.0.0'}):
+            self.assertFalse(self.controller.matches(item, {**state, **update}), update)
 
     def test_model_bound_health_is_rejected(self):
         image = self.controller.desired('image')
@@ -222,7 +246,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_voice_unloaded_is_healthy_but_runtime_errors_are_red(self):
         voice = self.controller.desired('voice')
-        healthy = dict(status='unloaded', service='higgs', downloaded=True, runtime_errors=[], asset_errors=[], model_loaded=False)
+        healthy = self.runtime_state('voice', status='unloaded', downloaded=True, runtime_errors=[], asset_errors=[], model_loaded=False)
         with patch.object(self.controller, 'health', return_value=healthy), patch.object(self.controller, 'owned_processes', return_value=[]):
             self.assertTrue(self.controller.inspect(voice)['healthy'])
         with patch.object(self.controller, 'health', return_value={**healthy, 'runtime_errors': ['missing runtime']}), patch.object(self.controller, 'owned_processes', return_value=[]):

@@ -44,7 +44,16 @@ Generators use their existing noninteractive `make serve` launchers and preserve
 
 Stopping a generator leaves its queue available. A running generator reads and writes the shared SQLite queue directly, so its UI and job routes keep working while the standalone queue HTTP service is off. The monitor never migrates, cancels, clears, or deletes jobs or media.
 
-Generator health must identify `imagegen-generator` or `voicegen-generator`, report `runtime_model_switching: true`, `queue_scope: shared`, a numeric dotted `version`, and the configured project (`project_dir` for image, `project` for voice). An optional `role` must be `generator`. Queue health identifies `imagegen-queue` or `voicegen-queue`, the same shared scope/version/project, and `role: queue-crud` for voice. Model-bound health contracts and identity aliases are not supported.
+Health checks follow each project's published contract. Both generators report `runtime_model_switching: true` and `queue_scope: shared`; both queues report the same shared scope.
+
+| Service | `service` | Version field | Project field | Role or mode |
+| --- | --- | --- | --- | --- |
+| Image generator | `imagegen-generator` | `version` | `project_dir` | Optional `role: generator` |
+| Image queue | `imagegen-queue` | `version` | `project_dir` | — |
+| Voice generator | `voicegen-service` | `api_version` | `project` | `mode: generator` |
+| Voice queue | `voicegen-queue` | `api_version` | `project` | `role: queue-crud` |
+
+Version values must be numeric dotted strings, such as `4.0.0`, and the project must match the configured checkout. Model-bound health contracts and identity aliases are not supported. A service/project mismatch with a working VoiceGen `/health` can indicate an outdated monitor; update Daemon Monitor rather than changing the service's identity fields.
 
 `active_model` is nullable and describes the selected/loaded backend. It is read-only information in generator tooltips and startup settings, and is never used to identify a process. Global queue counts, stage, and a blocked reason appear in the tooltip when supplied.
 

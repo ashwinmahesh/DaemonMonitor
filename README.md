@@ -76,6 +76,8 @@ Settings and logs live in `~/Library/Application Support/DaemonMonitor`. If you 
 
 If macOS takes too long to return process information, the monitor retries that check once. A failed check keeps the last switch positions and clears its status error after a successful refresh.
 
+If Voice Generator or its queue reports “The health endpoint belongs to a different service or project” even though you selected the right project, update Daemon Monitor. Its health checks must match VoiceGen's `api_version` and service identity; the [configuration reference](docs/REFERENCE.md#image-and-voice) lists the exact fields.
+
 ## Uninstall
 
 ```sh

@@ -21,7 +21,7 @@ import time
 
 IDS = ('bridge', 'image', 'image-queue', 'voice', 'voice-queue')
 NAMES = ('ai-bridge', 'Image gen service', 'Image gen queue', 'Voice gen service', 'Voice gen queue')
-GENERATOR_SERVICES = {'image': 'imagegen-generator', 'voice': 'voicegen-generator'}
+GENERATOR_SERVICES = {'image': 'imagegen-generator', 'voice': 'voicegen-service'}
 MODEL_ENV_KEYS = ('MODEL', 'IMAGE_MODEL', 'MODEL_BACKEND', 'DEFAULT_MODEL')
 NORMAL_GENERATOR_STAGES = {'ready', 'idle', 'unloaded', 'starting', 'loading', 'switching',
                            'expanding', 'rendering', 'generating', 'synthesizing', 'processing',
@@ -167,13 +167,16 @@ class Controller:
             return state.get('ok') is True and state.get('capabilities', {}).get('multi_project') is True
         family = identifier.split('-')[0]
         if state.get('project_dir' if family == 'image' else 'project') != root: return False
-        if state.get('queue_scope') != 'shared' or not self.protocol_version(state.get('version')): return False
+        # The two projects publish different field names in their v4 health APIs.
+        # Match each contract explicitly; never infer identity from a model name.
+        version_key = 'version' if family == 'image' else 'api_version'
+        if state.get('queue_scope') != 'shared' or not self.protocol_version(state.get(version_key)): return False
         if identifier.endswith('queue'):
             return state.get('service') == family + 'gen-queue' and (family == 'image' or state.get('role') == 'queue-crud')
         # Stable service/protocol identity, never the loaded model ID.
         return (state.get('runtime_model_switching') is True
                 and state.get('service') == GENERATOR_SERVICES[family]
-                and state.get('role', 'generator') == 'generator')
+                and (state.get('role', 'generator') if family == 'image' else state.get('mode')) == 'generator')
 
     @staticmethod
     def protocol_version(value):
