@@ -122,4 +122,4 @@ Metrics fixtures cover process trees, queue boundaries, executable paths contain
 
 For lifecycle changes, run the suite and build the app. Inspect the popover and settings on an available Mac. Preserve existing services and jobs during validation; do not submit inference jobs, clear queues, download models, or force-kill services. Record actual manual checks and limitations in the ignored local `verification.json` file.
 
-The screenshots in the README were captured from the installed app. They show the compact status panel and the Image Generator startup form without changing service state.
+The screenshots in the README were captured from the installed app. They show the compact status panel, AI Bridge performance history, and the Image Generator startup form without changing service state.
