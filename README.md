@@ -22,6 +22,8 @@ Each generator handles all ready models through one shared queue and loads the r
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
+If the icon disappears, open **Daemon Monitor** from Spotlight or Applications to restore it. The app also checks its icon after wake, unlock, and display changes, and uses a stable name to remember menu bar placement. macOS can temporarily hide menu bar items when space is limited; move the icon farther right with Command-drag if it gets crowded. See Apple's [menu bar availability notes](https://developer.apple.com/documentation/appkit/nsstatusbar).
+
 ## Performance history
 
 Click a tool’s name to see **CPU**, **memory**, and **GPU** line graphs. Image and Voice Generator have a **Service / Queue** selector so you can inspect each process group separately.

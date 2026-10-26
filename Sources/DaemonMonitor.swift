@@ -659,22 +659,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var pollingInterval: TimeInterval?
     private var focusObservers: [NSObjectProtocol] = []
     private var outsideClickMonitor: Any?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var statusVisibility: NSKeyValueObservation?
+    private var statusRecovery: DispatchWorkItem?
+    private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let peers = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "local.daemonmonitor")
         if peers.contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(.accessory)
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "Daemon Monitor")
-            button.image?.isTemplate = true
-            button.image?.size = NSSize(width: 17, height: 16)
-            button.target = self
-            button.action = #selector(clickStatusItem(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "Daemon Monitor"
-            button.setAccessibilityLabel("Daemon Monitor")
-        }
+        restoreStatusItem(reason: "launch")
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
@@ -696,7 +690,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.updatePollingSchedule()
             })
         }
+        focusObservers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.scheduleStatusRecovery(reason: "display change")
+        })
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.scheduleStatusRecovery(reason: "wake or unlock")
+            })
+        }
         updatePollingSchedule()
+    }
+    private func restoreStatusItem(reason: String, rebuild: Bool = false) {
+        guard !terminating else { return }
+        if rebuild || statusItem == nil || statusItem.button?.window == nil {
+            statusVisibility?.invalidate()
+            if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.autosaveName = "DaemonMonitor"
+            item.behavior = []
+            statusItem = item
+            statusVisibility = item.observe(\.isVisible, options: [.new]) { [weak self] _, change in
+                if change.newValue == false { self?.scheduleStatusRecovery(reason: "visibility changed") }
+            }
+        }
+        statusItem.isVisible = true
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "Daemon Monitor")
+            button.image?.isTemplate = true
+            button.image?.size = NSSize(width: 17, height: 16)
+            button.target = self
+            button.action = #selector(clickStatusItem(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "Daemon Monitor — \(monitor.statuses.filter(\.healthy).count) of 5 healthy"
+            button.setAccessibilityLabel("Daemon Monitor")
+            button.needsDisplay = true
+        }
+        NSLog("Menu bar item restored (%@); visible=%d", reason, statusItem.isVisible ? 1 : 0)
+    }
+    private func scheduleStatusRecovery(reason: String) {
+        guard !terminating else { return }
+        statusRecovery?.cancel()
+        let recovery = DispatchWorkItem { [weak self] in self?.restoreStatusItem(reason: reason) }
+        statusRecovery = recovery
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: recovery)
     }
     private func updatePollingSchedule() {
         let focused = popover.isShown && NSApp.isActive && popover.contentViewController?.view.window?.isKeyWindow == true
@@ -774,8 +810,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.performClose(nil)
         updatePollingSchedule()
     }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPopover(); return false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if popover.isShown {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.contentViewController?.view.window?.makeKey()
+            return false
+        }
+        restoreStatusItem(reason: "reopen", rebuild: true)
+        // AppKit attaches the replacement status button on a subsequent run loop.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, !self.terminating else { return }
+            self.showPopover()
+        }
+        return false
+    }
     func applicationWillTerminate(_ notification: Notification) {
+        terminating = true
+        statusRecovery?.cancel()
+        statusVisibility?.invalidate()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         monitor.performance.stop()
         stopWatchingOutsideClicks()
         timer?.invalidate()

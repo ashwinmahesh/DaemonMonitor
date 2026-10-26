@@ -98,6 +98,8 @@ Build without installing:
 
 The build targets Apple Silicon and macOS 13+, uses the local Swift SDK, and ad hoc signs the bundle for local use. `./install.sh` builds and installs the app and its login agent; it does not restart monitored daemons. `./uninstall.sh` removes only the monitor and its agent, retaining saved configuration and logs.
 
+The menu item has a stable `DaemonMonitor` autosave name and stays visible independently of the popover. Visibility observation and wake/session/display notifications coalesce recovery work without an extra polling timer. Reopening a closed popover rebuilds the item and waits briefly for AppKit to attach the new anchor before opening; reopening an already visible popover keeps its anchor. Recovery observations and pending work are cleared on termination. The app log records recovery events, but `NSStatusItem.isVisible` cannot prove an item is unobscured when the menu bar runs out of space.
+
 ### Control CLI
 
 ```sh
