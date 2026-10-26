@@ -77,7 +77,7 @@ enum MonitorTests {
         fake.reply(["start", "image"], success)
         fake.reply(["status"], failure)
         precondition(!monitor.isBusy("image"), "A failed status check must not leave controls disabled")
-        precondition(monitor.error != nil)
+        precondition(monitor.statusError != nil)
     }
 
     static func history(_ id: String, _ range: String) -> Result<Data, Error> {
@@ -141,6 +141,40 @@ enum MonitorTests {
         precondition(label.bounds.height > label.font!.boundingRectForFont.height)
     }
 
+    static func statusRecovery() {
+        for actionError in [nil, "The generator is busy."] as [String?] {
+            let fake = FakeHelper()
+            let monitor = Monitor(helper: fake.call)
+            monitor.statuses = [status(true)]
+            monitor.error = actionError
+            monitor.refresh()
+            fake.reply(["status"], failure)
+            precondition(monitor.statusError != nil)
+            precondition(monitor.isOn("image"), "A failed process check must preserve the last switch position")
+            precondition(!monitor.statuses[0].healthy)
+            monitor.refresh()
+            fake.reply(["status"], snapshot(true))
+            precondition(monitor.statusError == nil, "A successful poll must clear its earlier status error")
+            precondition(monitor.error == actionError, "Polling must preserve unrelated action errors")
+            precondition(monitor.statuses[0].healthy)
+        }
+    }
+
+    static func browserEndpoints() {
+        let monitor = Monitor(helper: FakeHelper().call)
+        monitor.statuses = [
+            ServiceStatus(id: "image", name: "Image", running: true, healthy: true, detail: "Healthy", port: 6732),
+            ServiceStatus(id: "voice", name: "Voice", running: true, healthy: false, detail: "Loading", port: 6743),
+            ServiceStatus(id: "image-queue", name: "Queue", running: true, healthy: true, detail: "Healthy", port: 65302)
+        ]
+        precondition(monitor.serviceUIURL("image")?.absoluteString == "http://127.0.0.1:6732/")
+        precondition(monitor.serviceUIURL("voice")?.absoluteString == "http://127.0.0.1:6743/")
+        precondition(monitor.serviceUIURL("image-queue") == nil)
+        precondition(monitor.serviceUIURL("bridge") == nil)
+        monitor.statuses[0].running = false
+        precondition(monitor.serviceUIURL("image") == nil, "Stopped generators must not offer an unavailable UI")
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -151,6 +185,8 @@ enum MonitorTests {
         performanceSampling()
         tooltipPorts()
         tooltipWrapping()
-        print("Passed 10 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, and tooltip layout.")
+        statusRecovery()
+        browserEndpoints()
+        print("Passed 12 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, tooltip layout, and browser endpoints.")
     }
 }

@@ -36,9 +36,9 @@ def process_usage(pid):
     return {'start': info.started, 'cpu': info.user + info.system, 'memory': info.footprint}
 
 
-def process_table():
-    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,uid=,command='],
-                            capture_output=True, text=True, check=True, timeout=5)
+def process_table(controller):
+    result = controller.read_process_info(['/bin/ps', '-axo', 'pid=,ppid=,uid=,command='],
+                                         timeout=5, check=True)
     table = {}
     for line in result.stdout.splitlines():
         parts = line.strip().split(None, 3)
@@ -164,7 +164,7 @@ class MetricsStore:
                usage_reader=process_usage, gpu_reader=gpu_counters):
         now = time.time() if now is None else now
         uptime = time.monotonic() if uptime is None else uptime
-        table = process_table() if table is None else table
+        table = process_table(controller) if table is None else table
         groups, roots = service_processes(controller, table, include_roots=True)
         gpu_available, gpus = gpu_reader() if any(groups.values()) else (False, {})
         samples = []

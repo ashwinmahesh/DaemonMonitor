@@ -169,18 +169,31 @@ class Controller:
         return None
 
     @staticmethod
+    def read_process_info(command, timeout, check=False):
+        # A process query can briefly stall around sleep/wake or heavy system load.
+        # Retry only this read; never turn a failed query into an empty process list.
+        for attempt, limit in enumerate((timeout, 8)):
+            try:
+                return subprocess.run(command, capture_output=True, text=True, timeout=limit, check=check)
+            except subprocess.TimeoutExpired:
+                if attempt:
+                    raise ValueError('macOS took too long to read process status. Refresh to try again.') from None
+            except (OSError, subprocess.CalledProcessError):
+                raise ValueError('macOS could not read process status. Refresh to try again.') from None
+
+    @staticmethod
     def processes():
-        result = subprocess.run(['/bin/ps', '-axo', 'pid=,command='], capture_output=True, text=True, timeout=4)
+        result = Controller.read_process_info(['/bin/ps', '-axo', 'pid=,command='], timeout=4, check=True)
         return [line.strip().split(None, 1) for line in result.stdout.splitlines() if len(line.strip().split(None, 1)) == 2]
 
     @staticmethod
     def fingerprint(pid):
-        result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=,command='], capture_output=True, text=True, timeout=3)
+        result = Controller.read_process_info(['/bin/ps', '-p', str(pid), '-o', 'lstart=,command='], timeout=3)
         return result.stdout.strip()
 
     @staticmethod
     def cwd_matches(pid, root):
-        result = subprocess.run(['/usr/sbin/lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], capture_output=True, text=True, timeout=4)
+        result = Controller.read_process_info(['/usr/sbin/lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], timeout=4)
         return 'n' + str(root.resolve()) in result.stdout.splitlines()
 
     def owned_processes(self, item, processes=None):

@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 def load(name):
@@ -51,6 +51,23 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(groups['image'], {10, 13})
         self.assertEqual(groups['image-queue'], {11, 12})
         self.assertEqual(groups['bridge'], {20, 21})
+
+    def test_metrics_process_list_retries_a_transient_timeout(self):
+        command = ['/bin/ps', '-axo', 'pid=,ppid=,uid=,command=']
+        result = control.subprocess.CompletedProcess(command, 0, stdout=f'123 1 {os.getuid()} python server.py\n')
+        with patch.object(control.subprocess, 'run', side_effect=[control.subprocess.TimeoutExpired(command, 5), result]) as run:
+            table = metrics.process_table(self.controller)
+        self.assertEqual(table, {123: {'parent': 1, 'command': 'python server.py'}})
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [5, 8])
+
+    def test_failed_process_query_preserves_history_and_running_state(self):
+        self.sample()
+        with patch.object(self.controller, 'read_process_info', side_effect=ValueError('macOS took too long to read process status')):
+            with self.assertRaises(ValueError):
+                self.store.sample(self.controller, now=NOW + 60)
+        history = self.store.history('image', '5m', now=NOW + 60)
+        self.assertTrue(history['running'])
+        self.assertEqual(len(history['points']), 1)
 
     def test_bridge_executable_with_spaces_is_identified(self):
         del self.controller.owned_processes

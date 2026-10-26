@@ -82,6 +82,9 @@ final class Monitor: ObservableObject {
     }
     @Published var settingsExpanded = false { didSet { layoutChanged?() } }
     @Published var error: String? { didSet { layoutChanged?() } }
+    @Published private(set) var statusError: String? { didSet { layoutChanged?() } }
+    var notice: String? { error ?? statusError }
+    func dismissNotice() { error = nil; statusError = nil }
     @Published var saving = false
     @Published var performanceID: String? {
         didSet {
@@ -108,6 +111,14 @@ final class Monitor: ObservableObject {
     func family(_ id: String) -> String { String(id.split(separator: "-")[0]) }
     func isBusy(_ id: String) -> Bool { pending.keys.contains { family($0) == family(id) } }
     func isOn(_ id: String) -> Bool { pending[id] ?? statuses.first(where: { $0.id == id })?.running ?? false }
+    func serviceUIURL(_ id: String) -> URL? {
+        guard ["image", "voice"].contains(id), let status = statuses.first(where: { $0.id == id }), status.running else { return nil }
+        return URL(string: "http://127.0.0.1:\(status.port)/")
+    }
+    func openServiceUI(_ id: String) {
+        guard let url = serviceUIURL(id) else { return }
+        if !NSWorkspace.shared.open(url) { error = "Could not open the service UI in your default browser." }
+    }
     func loadSettings() {
         helper(["config"], nil) { result in
             switch result {
@@ -127,14 +138,13 @@ final class Monitor: ObservableObject {
         helper(["status"], nil) { result in
             switch result {
             case .success(let data):
-                do { self.statuses = try JSONDecoder().decode(StatusReply.self, from: data).services; self.statusChanged?() }
-                catch { self.error = error.localizedDescription }
+                do {
+                    self.statuses = try JSONDecoder().decode(StatusReply.self, from: data).services
+                    self.statusError = nil
+                    self.statusChanged?()
+                } catch { self.reportStatusError(error.localizedDescription) }
             case .failure(let error):
-                self.error = error.localizedDescription
-                for i in self.statuses.indices {
-                    self.statuses[i].healthy = false
-                    self.statuses[i].detail = "Status unavailable: " + error.localizedDescription
-                }
+                self.reportStatusError(error.localizedDescription)
             }
             self.refreshing = false
             completions.forEach { $0() }
@@ -143,6 +153,14 @@ final class Monitor: ObservableObject {
                 self.refresh()
             }
         }
+    }
+    private func reportStatusError(_ message: String) {
+        statusError = message
+        for i in statuses.indices {
+            statuses[i].healthy = false
+            statuses[i].detail = "Status unavailable: " + message
+        }
+        statusChanged?()
     }
     func toggle(_ status: ServiceStatus, on: Bool) {
         guard !isBusy(status.id) else { return }
@@ -380,6 +398,23 @@ struct RowSettings: View {
     }
 }
 
+struct ServiceBrowserButton: View {
+    @ObservedObject var monitor: Monitor
+    let title: String
+    let service: ServiceStatus
+    private var helpText: String {
+        service.running ? "Open \(title) in your browser" : "Start \(title) to open its UI"
+    }
+    var body: some View {
+        Button { monitor.openServiceUI(service.id) } label: {
+            Image(systemName: "arrow.up.right.square").font(.system(size: 11))
+                .frame(width: 20, height: 24).contentShape(Rectangle())
+        }.buttonStyle(.plain).foregroundStyle(.secondary)
+            .disabled(monitor.serviceUIURL(service.id) == nil)
+            .help(helpText).accessibilityLabel("Open \(title) UI")
+    }
+}
+
 struct ServiceFamilyRow: View {
     @ObservedObject var monitor: Monitor
     let title: String
@@ -394,9 +429,14 @@ struct ServiceFamilyRow: View {
                 Button { monitor.showPerformance(service.id) } label: {
                     HStack(spacing: 4) {
                         Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        Image(systemName: "chart.xyaxis.line").font(.system(size: 9)).foregroundStyle(.secondary)
+                        if queue == nil {
+                            Image(systemName: "chart.xyaxis.line").font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }.buttonStyle(.plain).help("View performance for " + title).accessibilityLabel("Performance for " + title)
+                if queue != nil {
+                    ServiceBrowserButton(monitor: monitor, title: title, service: service)
+                }
             }.frame(maxWidth: .infinity, alignment: .leading)
             ServiceSwitch(monitor: monitor, status: service)
                 .frame(width: 44)
@@ -606,7 +646,7 @@ struct PopoverView: View {
                                 }
                             }
                         }
-                        if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil } }
+                        if let error = monitor.notice { ErrorNotice(text: error) { monitor.dismissNotice() } }
                     }
                 }.padding(12)
             }
@@ -692,7 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let extra: CGFloat = monitor.settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
             popover.contentSize = NSSize(width: 360, height: base + extra + (monitor.error == nil ? 0 : 76))
         } else {
-            popover.contentSize = NSSize(width: 320, height: monitor.error == nil ? 160 : 244)
+            popover.contentSize = NSSize(width: 320, height: monitor.notice == nil ? 160 : 244)
         }
     }
     @objc private func clickStatusItem(_ sender: Any?) {

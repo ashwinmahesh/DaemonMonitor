@@ -10,6 +10,7 @@ Click the activity icon in the menu bar to open Daemon Monitor. Click outside th
 
 - **AI Bridge** has one on/off switch.
 - **Image Generator** and **Voice Generator** each have separate **Service** and **Queue** switches.
+- Click the **square-arrow button** beside a generator’s name to open its UI in your default browser. It becomes available when the service is running and uses its current port.
 - Hover over a **green dot** to see its running port. A **red dot** means stopped, starting, or unhealthy; hover over it to see the reason.
 - The header shows how many of the five services are online. Click the refresh button for an immediate check.
 
@@ -21,7 +22,7 @@ Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Mo
 
 ## Performance history
 
-Click a tool’s name or the little chart beside it to see **CPU**, **memory**, and **GPU** line graphs. Image and Voice Generator have a **Service / Queue** selector so you can inspect each process group separately.
+Click a tool’s name to see **CPU**, **memory**, and **GPU** line graphs. Image and Voice Generator have a **Service / Queue** selector so you can inspect each process group separately.
 
 Choose **5m, 30m, 1h, 6h, 24h, 3d, or 7d**. Hover over a chart to inspect its values. Each chart also shows the highest recorded value in that range. Click the back arrow to return to your services.
 
@@ -64,6 +65,8 @@ To update, pull the latest source and run `./install.sh` again. The previous app
 Hover over its dot for the reason. **Not started** means it is switched off; other messages explain startup or health failures. Open the row’s settings and click **Logs**, or right-click the menu bar icon and choose **Open logs** for more detail.
 
 Settings and logs live in `~/Library/Application Support/DaemonMonitor`. If you change a port while a service is running, the monitor keeps checking its current address until you stop it and start it again.
+
+If macOS takes too long to return process information, the monitor retries that check once. A failed check keeps the last switch positions and clears its status error after a successful refresh.
 
 ## Uninstall
 

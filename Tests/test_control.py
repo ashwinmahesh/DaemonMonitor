@@ -30,6 +30,25 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(command, ['/usr/bin/make', 'queue', 'NONINTERACTIVE=1', 'QUEUE_PORT=55302'])
         self.assertNotIn('MODEL=higgs', self.controller.start_command(self.controller.desired('voice-queue'))[0])
 
+    def test_process_list_retries_a_transient_timeout(self):
+        command = ['/bin/ps', '-axo', 'pid=,command=']
+        result = control.subprocess.CompletedProcess(command, 0, stdout='123 /usr/bin/python server.py\n')
+        with patch.object(control.subprocess, 'run', side_effect=[control.subprocess.TimeoutExpired(command, 4), result]) as run:
+            self.assertEqual(self.controller.processes(), [['123', '/usr/bin/python server.py']])
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [4, 8])
+
+    def test_process_list_timeout_is_bounded_and_never_reports_stopped(self):
+        command = ['/bin/ps', '-axo', 'pid=,command=']
+        with patch.object(control.subprocess, 'run', side_effect=control.subprocess.TimeoutExpired(command, 4)) as run:
+            with self.assertRaisesRegex(ValueError, 'macOS took too long to read process status'):
+                self.controller.snapshot()
+        self.assertEqual(run.call_count, 2)
+
+    def test_failed_process_query_is_not_an_empty_list(self):
+        with patch.object(control.subprocess, 'run', side_effect=control.subprocess.CalledProcessError(1, ['/bin/ps'])):
+            with self.assertRaisesRegex(ValueError, 'macOS could not read process status'):
+                self.controller.processes()
+
     def test_advanced_flags_are_literal_arguments(self):
         item = self.controller.desired('image')
         item.update(llm=False, loras=False, model='chroma1-flash', environment='DATA_DIR=/some path/$(touch hacked)\nVENV=/a venv')
