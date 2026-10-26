@@ -594,6 +594,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var timer: Timer?
     private var pollingInterval: TimeInterval?
     private var focusObservers: [NSObjectProtocol] = []
+    private var outsideClickMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let peers = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "local.daemonmonitor")
@@ -644,6 +645,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         RunLoop.main.add(nextTimer, forMode: .common)
         timer = nextTimer
     }
+    private func watchOutsideClicks() {
+        guard outsideClickMonitor == nil else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
+    }
+    private func stopWatchingOutsideClicks() {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        outsideClickMonitor = nil
+    }
     private func resize() {
         if let id = monitor.selectedID {
             let base: CGFloat = id == "image" ? 304 : id == "voice" ? 274 : id == "bridge" ? 218 : 188
@@ -680,12 +691,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func refreshStatus() { monitor.refresh() }
     @objc private func openLogs() { monitor.openLogs() }
     @objc private func quit() { NSApp.terminate(nil) }
-    func popoverDidShow(_ notification: Notification) { updatePollingSchedule() }
-    func popoverDidClose(_ notification: Notification) { updatePollingSchedule() }
+    func popoverDidShow(_ notification: Notification) {
+        watchOutsideClicks()
+        updatePollingSchedule()
+    }
+    func popoverDidClose(_ notification: Notification) {
+        stopWatchingOutsideClicks()
+        updatePollingSchedule()
+    }
     func applicationDidBecomeActive(_ notification: Notification) { updatePollingSchedule() }
-    func applicationDidResignActive(_ notification: Notification) { updatePollingSchedule() }
+    func applicationDidResignActive(_ notification: Notification) {
+        popover.performClose(nil)
+        updatePollingSchedule()
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPopover(); return false }
     func applicationWillTerminate(_ notification: Notification) {
+        stopWatchingOutsideClicks()
         timer?.invalidate()
         focusObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }

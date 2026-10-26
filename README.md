@@ -6,7 +6,7 @@ Your local AI services, one click away in the Mac menu bar. See what’s running
 
 ## Using the widget
 
-Click the activity icon in the menu bar to open Daemon Monitor.
+Click the activity icon in the menu bar to open Daemon Monitor. Click outside the popover to hide it.
 
 - **AI Bridge** has one on/off switch.
 - **Image Generator** and **Voice Generator** each have separate **Service** and **Queue** switches.
