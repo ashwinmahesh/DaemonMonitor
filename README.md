@@ -45,7 +45,7 @@ cd DaemonMonitor
 ./install.sh
 ```
 
-The installer builds the app, puts it in `~/Applications`, and launches it. Daemon Monitor starts automatically when you log in and stays in the menu bar, with no Dock icon.
+The installer shows each stage as it builds, installs, and launches the app, with an elapsed-time update every five seconds during longer build steps. The app lives in `~/Applications`, starts automatically when you log in, and stays in the menu bar with no Dock icon.
 
 To update, pull the latest source and run `./install.sh` again. The previous app is kept as `~/Applications/Daemon Monitor.app.previous`. Installing or updating leaves your monitored services in their current state.
 
