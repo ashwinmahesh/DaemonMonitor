@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 // Exercise the real Monitor with delayed helper replies; no daemons are started or stopped.
 @main
@@ -121,6 +121,26 @@ enum MonitorTests {
         precondition(HistoryRange.allCases.count == 7)
     }
 
+    static func tooltipPorts() {
+        for port in [8765, 55302, 55205, 65535] {
+            let label = StatusDot.tooltipLabel(for: "Running on port \(port)")
+            let natural = label.cell!.cellSize
+            let visible = label.cell!.cellSize(forBounds: label.bounds)
+            precondition(visible.width >= natural.width - 0.01, "The complete port must fit on one line")
+            precondition(label.bounds.height >= natural.height, "The full line height must fit")
+        }
+        let stopped = StatusDot.tooltipLabel(for: "Not started.")
+        precondition(stopped.bounds.width < 80, "Short tooltips must not have a fixed minimum width")
+    }
+
+    static func tooltipWrapping() {
+        let label = StatusDot.tooltipLabel(for: String(repeating: "The service did not respond to its health check. ", count: 8))
+        let required = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: label.bounds.width, height: 10000))
+        precondition(label.bounds.width <= 260, "Long failure reasons must wrap within the popover")
+        precondition(label.bounds.height >= required.height, "Wrapped failure reasons must remain fully visible")
+        precondition(label.bounds.height > label.font!.boundingRectForFont.height)
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -129,6 +149,8 @@ enum MonitorTests {
         failedRefresh()
         staleHistory()
         performanceSampling()
-        print("Passed 8 monitor checks: toggles, polling races, failure recovery, history ranges, and sampling.")
+        tooltipPorts()
+        tooltipWrapping()
+        print("Passed 10 monitor checks: toggles, polling races, failure recovery, history ranges, sampling, and tooltip layout.")
     }
 }

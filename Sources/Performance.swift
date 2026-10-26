@@ -276,7 +276,8 @@ struct PerformanceView: View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Button { monitor.performanceID = nil } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium)).frame(width: 18, height: 24)
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
+                        .frame(width: 36, height: 32).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("Back to services")
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.system(size: 13, weight: .semibold))

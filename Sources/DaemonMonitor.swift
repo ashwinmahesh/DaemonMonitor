@@ -205,6 +205,18 @@ struct StatusDot: NSViewRepresentable {
     }
     static func dismantleNSView(_ view: HoverDot, coordinator: ()) { view.dismissTooltip() }
 
+    static func tooltipLabel(for reason: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: String(reason.prefix(1400)))
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .labelColor
+        // Measure the actual cell, including its text inset and line height. Measuring
+        // only the string can wrap five-digit ports onto a hidden second line.
+        let width = min(260, ceil(label.cell!.cellSize.width))
+        let fitted = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10000))
+        label.frame = NSRect(x: 8, y: 6, width: width, height: ceil(fitted.height))
+        return label
+    }
+
     final class HoverDot: NSView {
         private var healthy = false
         private var reason = "Not started."
@@ -279,10 +291,8 @@ struct StatusDot: NSViewRepresentable {
         }
         private func showTooltip() {
             guard hovered, tooltip == nil, let window, window.isKeyWindow else { return }
-            let font = NSFont.systemFont(ofSize: 11)
-            let text = String(reason.prefix(1400))
-            let measured = (text as NSString).boundingRect(with: NSSize(width: 260, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
-            let size = NSSize(width: max(120, ceil(measured.width)) + 20, height: ceil(measured.height) + 18)
+            let label = StatusDot.tooltipLabel(for: reason)
+            let size = NSSize(width: label.frame.maxX + 8, height: label.frame.maxY + 6)
             let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isReleasedWhenClosed = false
             panel.isOpaque = false
@@ -297,10 +307,6 @@ struct StatusDot: NSViewRepresentable {
             background.wantsLayer = true
             background.layer?.cornerRadius = 7
             background.layer?.masksToBounds = true
-            let label = NSTextField(wrappingLabelWithString: text)
-            label.font = font
-            label.textColor = .labelColor
-            label.frame = NSRect(x: 10, y: 9, width: size.width - 20, height: size.height - 18)
             background.addSubview(label)
             panel.contentView = background
             let anchor = window.convertToScreen(convert(bounds, to: nil))

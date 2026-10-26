@@ -23,7 +23,7 @@ Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Mo
 
 Click a tool’s name or the little chart beside it to see **CPU**, **memory**, and **GPU** line graphs. Image and Voice Generator have a **Service / Queue** selector so you can inspect each process group separately.
 
-Choose **5m, 30m, 1h, 6h, 24h, 3d, or 7d**. Hover over a chart to inspect its values. Each chart also shows the highest recorded value in that range.
+Choose **5m, 30m, 1h, 6h, 24h, 3d, or 7d**. Hover over a chart to inspect its values. Each chart also shows the highest recorded value in that range. Click the back arrow to return to your services.
 
 Performance counters are recorded **only while each service or queue is running**: every **15 seconds** while the popover is open and focused, and every **minute** in the background. Stopped tools keep their history without adding zero-usage samples. Health polling keeps the schedule described above. History stays on your Mac for seven days and survives app restarts; older ranges fill in over time.
 

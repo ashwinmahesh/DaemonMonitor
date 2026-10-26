@@ -116,7 +116,7 @@ zsh Tests/run_monitor_tests.sh
 
 The unit suite uses mocks and temporary local HTTP fixtures. It covers startup arguments, configuration validation, retention of running endpoints, literal environment values, authenticated health checks, independent queue controls, stale PIDs, development ports, busy generators, and refusal to replace unrelated listeners.
 
-The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover failed actions and status checks, without operating real services.
+The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover failed actions, status checks, and tooltip layout, including five-digit queue ports and wrapped failure reasons, without operating real services.
 
 Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses and sampling throttling.
 
