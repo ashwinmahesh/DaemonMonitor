@@ -37,7 +37,7 @@ def defaults():
     return {'services': [
         dict(id='bridge', name=NAMES[0], port=8765, root='~/Library/Application Support/AI Bridge',
              binary='~/Library/Application Support/AI Bridge/bin/ai-bridge', log_file_only=True, environment=''),
-        dict(id='image', name=NAMES[1], port=5732, root=image, llm=True, loras=True, environment=''),
+        dict(id='image', name=NAMES[1], port=5742, root=image, llm=True, loras=True, environment=''),
         dict(id='image-queue', name=NAMES[2], port=55302, root=image, environment=''),
         dict(id='voice', name=NAMES[3], port=5743, root=voice, llm=True, environment=''),
         dict(id='voice-queue', name=NAMES[4], port=55205, root=voice, environment='')

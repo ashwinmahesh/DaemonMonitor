@@ -29,7 +29,7 @@ class MetricsTests(unittest.TestCase):
         self.controller.owned_processes = Mock(side_effect=lambda item, pairs: list(self.roots[item['id']] & {int(p) for p, _ in pairs}))
         binary = str(control.path(self.controller.desired('bridge')['binary']))
         self.table = {
-            10: {'parent': 1, 'command': 'python server.py --port 5732'},
+            10: {'parent': 1, 'command': 'python server.py --port 5742'},
             11: {'parent': 10, 'command': 'python queue_api.py --port 55302'},
             12: {'parent': 11, 'command': 'queue helper'},
             13: {'parent': 10, 'command': 'image helper'},

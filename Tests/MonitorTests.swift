@@ -23,11 +23,11 @@ enum MonitorTests {
 
     static func status(_ running: Bool) -> ServiceStatus {
         ServiceStatus(id: "image", name: "Image gen service", running: running,
-                      healthy: running, detail: running ? "Healthy" : "Not started.", port: 5732)
+                      healthy: running, detail: running ? "Healthy" : "Not started.", port: 5742)
     }
     static func snapshot(_ running: Bool) -> Result<Data, Error> {
         .success(Data("""
-        {"services":[{"id":"image","name":"Image gen service","running":\(running),"healthy":\(running),"detail":"status","port":5732}]}
+        {"services":[{"id":"image","name":"Image gen service","running":\(running),"healthy":\(running),"detail":"status","port":5742}]}
         """.utf8))
     }
     static let success: Result<Data, Error> = .success(Data("{\"ok\":true}".utf8))
@@ -183,7 +183,7 @@ enum MonitorTests {
             monitor.refresh()
             fake.reply(["status"], .success(Data("""
             {"services":[{"id":"image","name":"Image gen service","running":true,"healthy":true,
-            "detail":"Healthy · ready","port":5732,"runtime_model_switching":true,
+            "detail":"Healthy · ready","port":5742,"runtime_model_switching":true,
             "active_model":\(active),"busy":false}]}
             """.utf8)))
             let status = monitor.statuses[0]
@@ -196,9 +196,9 @@ enum MonitorTests {
     static func saveStartupWithoutModel() {
         let fake = FakeHelper()
         let monitor = Monitor(helper: fake.call)
-        let settings = ServiceSettings(id: "image", name: "Image", port: 5732, root: "/test/image",
+        let settings = ServiceSettings(id: "image", name: "Image", port: 5742, root: "/test/image",
             binary: nil, llm: true, loras: true, log_file_only: nil, environment: "")
-        monitor.save(settings, port: "5732", queuePort: "55302")
+        monitor.save(settings, port: "5742", queuePort: "55302")
         let input = try! JSONSerialization.jsonObject(with: fake.requests[0].input!) as! [String: Any]
         precondition(input["model"] == nil, "Startup settings must not send a model override")
         fake.reply(["save"], success)

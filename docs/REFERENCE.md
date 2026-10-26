@@ -9,12 +9,14 @@ Saved settings take effect on the next explicit start. Running services continue
 | Control | Available options | Defaults |
 | --- | --- | --- |
 | AI Bridge | State folder (`--home`), executable, port, file-only logging, environment | Existing `local.ai-bridge.api` login service; port 8765 |
-| Image service | Project folder, port, queue port, prompt LLM, LoRAs, environment | Port 5732; queue 55302; prompt LLM and LoRAs on |
+| Image service | Project folder, port, queue port, prompt LLM, LoRAs, environment | Port 5742; queue 55302; prompt LLM and LoRAs on |
 | Image queue | Project folder, port, environment | Port 55302 |
 | Voice service | Project folder, port, queue port, prompt LLM, environment | Port 5743; queue 55205; prompt LLM on |
 | Voice queue | Project folder, port, environment | Port 55205 |
 
 The default project folders are `~/Documents/models/ImageGen-Service` and `~/Documents/models/VoiceGen-Service`. Set a different folder under **Paths & environment** if needed.
+
+Saved port overrides stay in effect when defaults change, including an explicitly saved Image service port of 5732. Running services keep their recorded endpoint until they stop.
 
 Generators select and load models at runtime for each job. The monitor has no model picker, model registry, or default-model configuration, and never passes `MODEL` to `make serve`. Obsolete monitor model values are ignored and removed from configuration on the next save. Startup never runs setup or downloads; saving monitor settings never switches a backend or restarts a running service.
 

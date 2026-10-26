@@ -20,16 +20,41 @@ class ControllerTests(unittest.TestCase):
         self.controller = control.Controller(Path(self.temp.name))
 
     def test_generator_and_queue_startup_arguments(self):
+        self.assertEqual(self.controller.desired('image')['port'], 5742)
+        self.assertEqual(self.controller.desired('voice')['port'], 5743)
         for identifier in ('image', 'voice'):
             item = self.controller.desired(identifier)
             command, env = self.controller.start_command(item)
             self.assertFalse(any(argument.startswith('MODEL=') for argument in command))
             self.assertIn('NO_LLM=0', command)
+            self.assertIn('PORT=' + str(item['port']), command)
             self.assertIn('QUEUE_PORT=' + str(self.controller.item(identifier + '-queue')['port']), command)
             self.assertEqual(command[:2], ['/usr/bin/make', 'serve'])
         command, _ = self.controller.start_command(self.controller.desired('image-queue'))
         self.assertEqual(command, ['/usr/bin/make', 'queue', 'NONINTERACTIVE=1', 'QUEUE_PORT=55302'])
         self.assertNotIn('MODEL=higgs', self.controller.start_command(self.controller.desired('voice-queue'))[0])
+
+    def test_image_default_change_preserves_saved_port_overrides(self):
+        for port in (5732, 6732):
+            saved = control.defaults()
+            saved['services'][1]['port'] = port
+            control.atomic_json(self.controller.config_file, saved)
+            before = self.controller.config_file.read_bytes()
+            reloaded = control.Controller(self.temp.name)
+            image = reloaded.desired('image')
+            self.assertEqual(image['port'], port)
+            self.assertEqual(image['queue_port'], 55302)
+            self.assertIn('PORT=' + str(port), reloaded.start_command(image)[0])
+            self.assertEqual(self.controller.config_file.read_bytes(), before)
+
+    def test_image_default_change_retains_a_running_endpoint(self):
+        active = self.controller.desired('image')
+        active['port'] = 5732
+        control.atomic_json(self.controller.active_file('image'), {'settings': active})
+        with patch.object(self.controller, 'inspect', return_value={'running':True}):
+            self.assertEqual(self.controller.resolve('image')[0]['port'], 5732)
+        with patch.object(self.controller, 'inspect', return_value={'running':False}):
+            self.assertEqual(self.controller.resolve('image')[0]['port'], 5742)
 
     def test_process_list_retries_a_transient_timeout(self):
         command = ['/bin/ps', '-axo', 'pid=,command=']
@@ -132,7 +157,7 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown setting'):
             controller.save({'id':'image','model':'z-image-turbo'})
         with patch.object(controller, 'resolve', side_effect=lambda identifier: (controller.desired(identifier), {'running':False})):
-            controller.save({'id':'image','port':5732})
+            controller.save({'id':'image','port':5742})
         self.assertTrue(all('model' not in item for item in control.read_json(controller.config_file)['services']))
 
     def test_inherited_model_environment_is_not_forwarded(self):
