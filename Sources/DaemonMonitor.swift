@@ -286,38 +286,74 @@ struct StatusDot: NSViewRepresentable {
     }
 }
 
-struct ServiceRow: View {
+struct ServiceControl: View {
     @ObservedObject var monitor: Monitor
     let status: ServiceStatus
+    let label: String?
+    let showsStatus: Bool
+
     var body: some View {
-        HStack(spacing: 11) {
-            StatusDot(healthy: status.healthy, reason: status.detail)
-                .frame(width: 12, height: 24)
-            Text(status.name).font(.system(size: 13, weight: .medium))
-                .help(status.detail + " · localhost:" + String(status.port))
-            Spacer(minLength: 8)
-            if monitor.pending[status.id] != nil {
-                ProgressView().controlSize(.mini).frame(width: 14)
+        HStack(spacing: 7) {
+            if showsStatus {
+                StatusDot(healthy: status.healthy, reason: status.detail)
+                    .frame(width: 12, height: 24)
+            }
+            if let label {
+                Text(label).font(.system(size: 12))
+                    .fixedSize()
+                    .help(status.detail + " · localhost:" + String(status.port))
             }
             Toggle(status.name, isOn: Binding(
                 get: { monitor.pending[status.id] ?? status.running },
                 set: { monitor.toggle(status, on: $0) }
             ))
             .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            .fixedSize()
             .disabled(monitor.isBusy(status.id))
             .accessibilityLabel(status.name)
-            Button {
-                monitor.error = nil
-                monitor.selectedID = status.id
-            } label: {
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary).frame(width: 20, height: 28)
+            if monitor.pending[status.id] != nil {
+                ProgressView().controlSize(.mini).frame(width: 16, height: 28)
+            } else {
+                Button {
+                    monitor.error = nil
+                    monitor.selectedID = status.id
+                } label: {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary).frame(width: 16, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Startup settings for " + status.name)
+                .accessibilityLabel("Startup settings for " + status.name)
             }
-            .buttonStyle(.plain)
-            .help("Startup settings for " + status.name)
-            .accessibilityLabel("Startup settings for " + status.name)
         }
-        .frame(height: 39)
+    }
+}
+
+struct ServiceFamilyRow: View {
+    @ObservedObject var monitor: Monitor
+    let title: String
+    let service: ServiceStatus
+    let queue: ServiceStatus?
+
+    var body: some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 7) {
+                if queue == nil {
+                    StatusDot(healthy: service.healthy, reason: service.detail)
+                        .frame(width: 12, height: 24)
+                }
+                Text(title).font(.system(size: 13, weight: .medium))
+            }.frame(width: 144, alignment: .leading)
+            ServiceControl(monitor: monitor, status: service,
+                           label: queue == nil ? nil : "Service", showsStatus: queue != nil)
+                .frame(width: 144, alignment: .trailing)
+            if let queue {
+                ServiceControl(monitor: monitor, status: queue, label: "Queue", showsStatus: true)
+                    .frame(width: 144, alignment: .trailing)
+            } else {
+                Color.clear.frame(width: 144, height: 1).accessibilityHidden(true)
+            }
+        }.frame(height: 39)
     }
 }
 
@@ -440,7 +476,17 @@ struct PopoverView: View {
                     if monitor.statuses.isEmpty {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        ForEach(monitor.statuses) { status in ServiceRow(monitor: monitor, status: status) }
+                        if let bridge = monitor.statuses.first(where: { $0.id == "bridge" }) {
+                            ServiceFamilyRow(monitor: monitor, title: "AI Bridge", service: bridge, queue: nil)
+                        }
+                        if let image = monitor.statuses.first(where: { $0.id == "image" }),
+                           let queue = monitor.statuses.first(where: { $0.id == "image-queue" }) {
+                            ServiceFamilyRow(monitor: monitor, title: "Image Generator", service: image, queue: queue)
+                        }
+                        if let voice = monitor.statuses.first(where: { $0.id == "voice" }),
+                           let queue = monitor.statuses.first(where: { $0.id == "voice-queue" }) {
+                            ServiceFamilyRow(monitor: monitor, title: "Voice Generator", service: voice, queue: queue)
+                        }
                         if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil }.padding(.top, 6) }
                     }
                 }.padding(.horizontal, 16).padding(.vertical, 12)
@@ -508,7 +554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func resize() {
         popover.contentSize = monitor.selectedID == nil
-            ? NSSize(width: 344, height: monitor.error == nil ? 235 : 325)
+            ? NSSize(width: 496, height: monitor.error == nil ? 149 : 239)
             : NSSize(width: 430, height: 590)
     }
     @objc private func clickStatusItem(_ sender: Any?) {
