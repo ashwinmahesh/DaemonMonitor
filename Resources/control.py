@@ -456,14 +456,25 @@ class Controller:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--support', type=Path, default=DEFAULT_SUPPORT)
-    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop'))
+    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop', 'sample', 'history'))
     parser.add_argument('identifier', nargs='?', choices=IDS)
+    parser.add_argument('--range', dest='range_name', choices=('5m', '30m', '1h', '6h', '24h', '3d', '7d'), default='5m')
+    parser.add_argument('--interval', type=int, choices=(15, 60), default=60)
     args = parser.parse_args()
     try:
         controller = Controller(args.support)
         if args.action == 'status': result = controller.snapshot()
         elif args.action == 'config': result = {'ok': True, **controller.config}
         elif args.action == 'save': result = controller.save(json.load(sys.stdin))
+        elif args.action in ('sample', 'history'):
+            from metrics import MetricsStore
+            store = MetricsStore(controller.support)
+            if args.action == 'sample':
+                with controller.lock('metrics'):
+                    result = store.sample(controller, interval=args.interval)
+            else:
+                if args.identifier is None: raise ValueError('Choose a service for history.')
+                result = store.history(args.identifier, args.range_name)
         else: result = controller.action(args.identifier, args.action)
     except Exception as error:
         result = {'ok': False, 'error': str(error)}

@@ -58,12 +58,33 @@ Switching it off invokes normal API shutdown, which also stops active bridge pro
 | Monitor login agent | `~/Library/LaunchAgents/local.daemonmonitor.app.plist` |
 | Settings, process records, and remembered failures | `~/Library/Application Support/DaemonMonitor` |
 | Monitor and monitor-launched service logs | `~/Library/Application Support/DaemonMonitor/logs` |
+| Seven-day performance history and counter baselines | `~/Library/Application Support/DaemonMonitor/metrics.sqlite3` |
 
 The monitor uses `/opt/homebrew/bin/python3` when available, falling back to `/usr/bin/python3`. The helper requires Python 3.9 or later. The install and uninstall scripts use Homebrew Python explicitly. Each model service continues to use its own existing Python environment.
 
+## Performance collection
+
+`Resources/metrics.py` collects all five service groups without calling health APIs or changing the monitored tools. It identifies the configured processes, follows their live descendants, and treats another monitored service’s root as a boundary so generator and queue usage is not counted twice.
+
+CPU time and physical memory footprint come from Darwin’s `proc_pid_rusage` API, using the public `rusage_info_v2` layout. See Apple’s [resource usage documentation](https://developer.apple.com/documentation/kernel/rusage_info_current). Memory is physical footprint, including compressed allocations, rather than virtual address space or separately added GPU allocations.
+
+On supported Apple Silicon drivers, the GPU collector reads each PID’s `AGXDeviceUserClient` / `AppUsage` / `accumulatedGPUTime` counters from the IORegistry. It calculates execution-time deltas divided by elapsed time. This is process-attributed GPU activity, rather than the whole Mac’s GPU percentage. Parallel command queues can produce values above 100%. Driver counters are not available on every macOS/GPU combination; unavailable or reset counters produce gaps, rather than invented zeroes.
+
+Only running services and queues get metric samples: every 15 seconds with the popover open and focused, or every 60 seconds otherwise. Stopped tools add no zero-usage rows. Lightweight process discovery checks for newly started tools, and the GPU query is skipped entirely when all monitored tools are stopped. Run identifiers keep separate executions disconnected in the charts, even after a short stop or restart.
+
+There is no privileged helper, continuous profiler, additional login agent, or extra Python package. The main app must remain running to collect history. Sampling does not run during sleep. Short-lived child processes or GPU queues that start and finish between samples may be missed.
+
+SQLite stores seven days of samples outside the repository, using WAL transactions and private file permissions. PID start times guard against PID reuse. First intervals, counter resets, and long collection gaps remain unknown. No older history is fabricated. Queries return at most 361 averaged points per graph; range peak labels are calculated from the original samples.
+
+### Measured overhead
+
+Ten end-to-end collections on the development Mac, with AI Bridge and its helper running and both generators stopped, measured a median **100 ms wall time**, **96 ms CPU time**, and **27.6 MiB peak helper memory**, including Python startup and child commands. The helper exits after each collection. This corresponds to about **0.16% of one CPU core** at the background rate, or **0.64%** at the foreground rate; chart rendering is separate, and more live child processes can add work.
+
+A seven-day SQLite fixture for one continuously running tool occupied **1.3 MiB** at one-minute sampling, or **5.2 MiB** at continuous 15-second sampling. Stopped tools do not add rows. These are measured examples, not fixed limits; SQLite’s temporary WAL files also use some space.
+
 ## Development
 
-The native interface is in `Sources/DaemonMonitor.swift`, using SwiftUI and an AppKit status item and popover. `Resources/control.py` provides service lifecycle and configuration handling using the Python standard library. `Tools/MakeIcon.swift` generates the app icon.
+The native interface is in `Sources/DaemonMonitor.swift`, using SwiftUI and an AppKit status item and popover. `Sources/Performance.swift` adds native Swift Charts and sampling coordination; `Sources/main.swift` starts the app. `Resources/control.py` provides service lifecycle and configuration handling, and `Resources/metrics.py` collects and stores metrics using the Python standard library. `Tools/MakeIcon.swift` generates the app icon.
 
 Build without installing:
 
@@ -78,6 +99,8 @@ The build targets Apple Silicon and macOS 13+, uses the local Swift SDK, and ad 
 ```sh
 python3 Resources/control.py status
 python3 Resources/control.py config
+python3 Resources/control.py sample
+python3 Resources/control.py history image --range 30m
 ```
 
 The helper also accepts `start SERVICE`, `stop SERVICE`, and `save` with a JSON patch on standard input. Service IDs are `bridge`, `image`, `image-queue`, `voice`, and `voice-queue`. These commands control the configured services.
@@ -94,6 +117,8 @@ zsh Tests/run_monitor_tests.sh
 The unit suite uses mocks and temporary local HTTP fixtures. It covers startup arguments, configuration validation, retention of running endpoints, literal environment values, authenticated health checks, independent queue controls, stale PIDs, development ports, busy generators, and refusal to replace unrelated listeners.
 
 The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover failed actions and status checks, without operating real services.
+
+Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses and sampling throttling.
 
 For lifecycle changes, run the suite and build the app. Inspect the popover and settings on an available Mac. Preserve existing services and jobs during validation; do not submit inference jobs, clear queues, download models, or force-kill services. Record actual manual checks and limitations in the ignored local `verification.json` file.
 

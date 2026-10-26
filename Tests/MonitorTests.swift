@@ -80,12 +80,55 @@ enum MonitorTests {
         precondition(monitor.error != nil)
     }
 
+    static func history(_ id: String, _ range: String) -> Result<Data, Error> {
+        .success(Data("""
+        {"id":"\(id)","range":"\(range)","start":0,"end":300,"resolution":15,"recording_since":null,
+         "points":[],"latest":null,"peaks":{"cpu":null,"memory":null,"gpu":null}}
+        """.utf8))
+    }
+
+    static func staleHistory() {
+        let fake = FakeHelper()
+        let performance = PerformanceMonitor(helper: fake.call)
+        performance.select("image")
+        performance.range = .week
+        fake.reply(["history", "image", "--range", "7d"], history("image", "7d"))
+        fake.reply(["history", "image", "--range", "5m"], history("image", "5m"))
+        precondition(performance.history?.range == "7d", "An older range response must not replace the selected history")
+        performance.select("voice-queue")
+        precondition(performance.history == nil)
+        performance.select(nil)
+        fake.reply(["history", "voice-queue", "--range", "7d"], history("voice-queue", "7d"))
+        precondition(performance.history == nil, "Closed history must ignore late replies")
+        fake.reply(["sample", "--interval", "60"], success)
+        precondition(fake.requests.isEmpty, "Background sampling must not read hidden charts")
+    }
+
+    static func performanceSampling() {
+        let fake = FakeHelper()
+        let monitor = Monitor(helper: fake.call)
+        monitor.performance.setSampling(focused: true)
+        defer { monitor.performance.stop() }
+        monitor.showPerformance("image-queue")
+        precondition(monitor.performanceID == "image-queue")
+        fake.reply(["history", "image-queue", "--range", "5m"], history("image-queue", "5m"))
+        fake.reply(["sample", "--interval", "15"], success)
+        precondition(fake.requests.map(\.arguments) == [["history", "image-queue", "--range", "5m"]])
+        fake.reply(["history", "image-queue", "--range", "5m"], history("image-queue", "5m"))
+        monitor.performance.sample()
+        precondition(fake.requests.isEmpty, "Repeated clicks must not trigger duplicate collections")
+        monitor.performanceID = nil
+        precondition(HistoryRange.allCases.count == 7)
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
         }
         failedStop()
         failedRefresh()
-        print("Passed 6 monitor checks: on/off transitions, overlapping polls, failed stop, and failed refresh.")
+        staleHistory()
+        performanceSampling()
+        print("Passed 8 monitor checks: toggles, polling races, failure recovery, history ranges, and sampling.")
     }
 }

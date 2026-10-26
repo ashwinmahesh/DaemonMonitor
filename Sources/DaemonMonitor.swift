@@ -42,7 +42,7 @@ enum Helper {
                 let process = Process()
                 let python = FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/python3") ? "/opt/homebrew/bin/python3" : "/usr/bin/python3"
                 process.executableURL = URL(fileURLWithPath: python)
-                process.arguments = [script.path] + arguments
+                process.arguments = ["-B", script.path] + arguments
                 let output = Pipe(), errors = Pipe(), stdin = Pipe()
                 process.standardOutput = output
                 process.standardError = errors
@@ -75,6 +75,7 @@ final class Monitor: ObservableObject {
     @Published var pending: [String: Bool] = [:]
     @Published var selectedID: String? {
         didSet {
+            if selectedID != nil { performanceID = nil }
             if selectedID != oldValue { settingsExpanded = false }
             layoutChanged?()
         }
@@ -82,6 +83,14 @@ final class Monitor: ObservableObject {
     @Published var settingsExpanded = false { didSet { layoutChanged?() } }
     @Published var error: String? { didSet { layoutChanged?() } }
     @Published var saving = false
+    @Published var performanceID: String? {
+        didSet {
+            guard performanceID != oldValue else { return }
+            performance.select(performanceID)
+            layoutChanged?()
+        }
+    }
+    let performance: PerformanceMonitor
     var layoutChanged: (() -> Void)?
     var statusChanged: (() -> Void)?
     private let helper: Helper.Caller
@@ -89,7 +98,12 @@ final class Monitor: ObservableObject {
     private var refreshQueued = false
     private var refreshCompletions: [() -> Void] = []
 
-    init(helper: @escaping Helper.Caller = Helper.call) { self.helper = helper }
+    init(helper: @escaping Helper.Caller = Helper.call) {
+        self.helper = helper
+        performance = PerformanceMonitor(helper: helper)
+    }
+
+    func showPerformance(_ id: String) { selectedID = nil; performanceID = id }
 
     func family(_ id: String) -> String { String(id.split(separator: "-")[0]) }
     func isBusy(_ id: String) -> Bool { pending.keys.contains { family($0) == family(id) } }
@@ -371,7 +385,12 @@ struct ServiceFamilyRow: View {
             HStack(spacing: 5) {
                 StatusDot(healthy: service.healthy, reason: service.detail, port: service.port)
                     .frame(width: 8, height: 20)
-                Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                Button { monitor.showPerformance(service.id) } label: {
+                    HStack(spacing: 4) {
+                        Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        Image(systemName: "chart.xyaxis.line").font(.system(size: 9)).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.plain).help("View performance for " + title).accessibilityLabel("Performance for " + title)
             }.frame(maxWidth: .infinity, alignment: .leading)
             ServiceSwitch(monitor: monitor, status: service)
                 .frame(width: 44)
@@ -540,7 +559,9 @@ struct PopoverView: View {
     @ObservedObject var monitor: Monitor
     var body: some View {
         Group {
-            if let id = monitor.selectedID, let value = monitor.settings.first(where: { $0.id == id }) {
+            if let id = monitor.performanceID {
+                PerformanceView(monitor: monitor, performance: monitor.performance, identifier: id)
+            } else if let id = monitor.selectedID, let value = monitor.settings.first(where: { $0.id == id }) {
                 SettingsView(monitor: monitor, value: value).id(id)
             } else {
                 VStack(spacing: 8) {
@@ -623,6 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         monitor.loadSettings()
         monitor.refresh()
+        monitor.performance.sample()
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             focusObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let self,
@@ -635,6 +657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func updatePollingSchedule() {
         let focused = popover.isShown && NSApp.isActive && popover.contentViewController?.view.window?.isKeyWindow == true
+        monitor.performance.setSampling(focused: focused)
         let interval: TimeInterval = focused ? 15 : 15 * 60
         guard pollingInterval != interval else { return }
         timer?.invalidate()
@@ -656,7 +679,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         outsideClickMonitor = nil
     }
     private func resize() {
-        if let id = monitor.selectedID {
+        if let id = monitor.performanceID {
+            popover.contentSize = NSSize(width: 400, height: monitor.family(id) == "bridge" ? 474 : 506)
+        } else if let id = monitor.selectedID {
             let base: CGFloat = id == "image" ? 304 : id == "voice" ? 274 : id == "bridge" ? 218 : 188
             let extra: CGFloat = monitor.settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
             popover.contentSize = NSSize(width: 360, height: base + extra + (monitor.error == nil ? 0 : 76))
@@ -672,6 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         monitor.refresh()
         monitor.loadSettings()
+        monitor.performance.sample()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -706,6 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPopover(); return false }
     func applicationWillTerminate(_ notification: Notification) {
+        monitor.performance.stop()
         stopWatchingOutsideClicks()
         timer?.invalidate()
         focusObservers.forEach { NotificationCenter.default.removeObserver($0) }

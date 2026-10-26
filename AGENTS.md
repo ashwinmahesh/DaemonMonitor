@@ -6,4 +6,6 @@ The user manages model startup manually. Preserve pre-existing services and acti
 
 Saved configuration applies at the next start; retain actual running endpoints. Synchronize the shared queue port and project folder within each image/voice family. Keep private settings, process records, credentials and logs in Application Support, outside the source tree.
 
+Performance views live in Sources/Performance.swift and the read-only collector in Resources/metrics.py. Record metrics only for running tools, including their live children without counting monitored queues twice. Skip GPU queries when all tools are stopped; preserve gaps between runs and unavailable counters. Keep health polling separate from 15-second foreground / 60-second background metrics sampling, and retain only seven days of local history. Run both Python tests and `zsh Tests/run_monitor_tests.sh` for metrics/controller changes.
+
 Validate lifecycle changes with `python3 -m unittest discover -s Tests -v`, then build with `./build.sh`. Visually inspect the popover/settings when the Mac is available. `./install.sh` deploys to ~/Applications and installs the monitor's own login agent; it must not restart monitored daemons. Record actual verification and limitations in verification.json. Do not claim UI checks or real inference were performed unless they were.

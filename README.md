@@ -19,6 +19,16 @@ Starting a generator also starts or reuses its queue. Stopping the generator lea
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
+## Performance history
+
+Click a tool’s name or the little chart beside it to see **CPU**, **memory**, and **GPU** line graphs. Image and Voice Generator have a **Service / Queue** selector so you can inspect each process group separately.
+
+Choose **5m, 30m, 1h, 6h, 24h, 3d, or 7d**. Hover over a chart to inspect its values. Each chart also shows the highest recorded value in that range.
+
+Performance counters are recorded **only while each service or queue is running**: every **15 seconds** while the popover is open and focused, and every **minute** in the background. Stopped tools keep their history without adding zero-usage samples. Health polling keeps the schedule described above. History stays on your Mac for seven days and survives app restarts; older ranges fill in over time.
+
+CPU and memory include the tool’s running child processes. CPU uses the Activity Monitor convention: **100% is one core**. GPU shows the process group’s Metal execution time as a percentage of elapsed time. Stopped periods, missing measurements, and time when Daemon Monitor is not running appear as gaps. Longer ranges use averages to keep charts fast; peak labels use the original samples.
+
 ## Startup settings
 
 Click the gear beside a row to change its startup options. For a generator, choose **Service settings…** or **Queue settings…**.

@@ -41,10 +41,11 @@ run_step() {
 }
 
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-run_step "Compile the menu bar app" xcrun swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 -framework AppKit -framework SwiftUI \
-  "$project_dir/Sources/DaemonMonitor.swift" "$project_dir/Sources/main.swift" -o "$app_dir/Contents/MacOS/DaemonMonitor"
+run_step "Compile the menu bar app" xcrun swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 -framework AppKit -framework SwiftUI -framework Charts \
+  "$project_dir/Sources/DaemonMonitor.swift" "$project_dir/Sources/Performance.swift" "$project_dir/Sources/main.swift" -o "$app_dir/Contents/MacOS/DaemonMonitor"
 run_step "Copy app metadata" cp "$project_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 run_step "Copy the service helper" cp "$project_dir/Resources/control.py" "$app_dir/Contents/Resources/control.py"
+run_step "Copy the metrics collector" cp "$project_dir/Resources/metrics.py" "$app_dir/Contents/Resources/metrics.py"
 run_step "Compile the icon generator" xcrun swiftc "$project_dir/Tools/MakeIcon.swift" -o "$project_dir/build/MakeIcon"
 run_step "Render the app icon" "$project_dir/build/MakeIcon" "$project_dir/build/AppIcon.iconset"
 run_step "Package the app icon" /usr/bin/iconutil -c icns "$project_dir/build/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"
