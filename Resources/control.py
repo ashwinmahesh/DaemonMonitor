@@ -362,21 +362,25 @@ class Controller:
                     'runtime_model_switching', 'active_model', 'busy')} for s in statuses]}
 
     def save(self, patch):
+        return self.save_many([patch])
+
+    def save_many(self, patches):
         with self.lock('configuration'):
             self.config = self.load_config()
             proposed = copy.deepcopy(self.config)
-            identifier = patch['id']
-            original = self.item(identifier)
-            allowed = set(original) - {'id', 'name'}
-            if set(patch) - allowed - {'id', 'queue_port'}: raise ValueError('Unknown setting.')
-            target = next(s for s in proposed['services'] if s['id'] == identifier)
-            target.update({k: v for k, v in patch.items() if k in allowed})
-            if identifier in ('image', 'voice', 'image-queue', 'voice-queue'):
-                family = identifier.split('-')[0]
-                for s in proposed['services']:
-                    if s['id'].split('-')[0] == family: s['root'] = target['root']
-                if 'queue_port' in patch:
-                    next(s for s in proposed['services'] if s['id'] == family + '-queue')['port'] = patch['queue_port']
+            for patch in patches:
+                identifier = patch['id']
+                original = self.item(identifier)
+                allowed = set(original) - {'id', 'name'}
+                if set(patch) - allowed - {'id', 'queue_port'}: raise ValueError('Unknown setting.')
+                target = next(s for s in proposed['services'] if s['id'] == identifier)
+                target.update({k: v for k, v in patch.items() if k in allowed})
+                if identifier in ('image', 'voice', 'image-queue', 'voice-queue'):
+                    family = identifier.split('-')[0]
+                    for s in proposed['services']:
+                        if s['id'].split('-')[0] == family: s['root'] = target['root']
+                    if 'queue_port' in patch:
+                        next(s for s in proposed['services'] if s['id'] == family + '-queue')['port'] = patch['queue_port']
             validate(proposed)
             # Preserve actual endpoints/settings, including user-started processes, until they stop.
             for service_id in IDS:

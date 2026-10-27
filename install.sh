@@ -1,6 +1,13 @@
 #!/bin/zsh
 set -euo pipefail
 project_dir="${0:A:h}"
+for argument in "$@"; do
+  if [[ "$argument" == "--help" || "$argument" == "-h" ]]; then
+    /opt/homebrew/bin/python3 -B "$project_dir/Tools/configure_install.py" "$@"
+    exit 0
+  fi
+done
+/opt/homebrew/bin/python3 -B -u "$project_dir/Tools/configure_install.py" "$@"
 print -r -- "[1/5] Building Daemon Monitor..."
 "$project_dir/build.sh"
 /opt/homebrew/bin/python3 -u - "$project_dir" <<'PY'

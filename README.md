@@ -74,6 +74,12 @@ cd DaemonMonitor
 ./install.sh
 ```
 
+The installer asks for the **AI Bridge state directory**, **Image Generator project directory**, and **Voice Generator project directory**. Each prompt shows its currently configured value; press **Enter** to keep it. On a first install, these are the default folders. New entries must be existing directories. Paths with spaces and `~/` are supported. Each generator's queue automatically uses the same project folder.
+
+AI Bridge's state directory contains its token and logs; it is separate from its source checkout. Its executable can be changed later in the widget's **Paths & environment** settings. Directory changes apply when you next start a service; running services keep their current settings.
+
+For an unattended install, run `./install.sh --non-interactive` to keep all current directories. The installer also keeps them automatically when standard input is not a terminal.
+
 The installer shows each stage as it builds, installs, and launches the app, with an elapsed-time update every five seconds during longer build steps. The app lives in `~/Applications`, starts automatically when you log in, and stays in the menu bar with no Dock icon.
 
 To update, pull the latest source and run `./install.sh` again. The previous app is kept as `~/Applications/Daemon Monitor.app.previous`. Installing or updating leaves your monitored services in their current state.
