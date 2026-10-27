@@ -26,7 +26,7 @@ if installed.exists():
     expected = str(Path.home() / 'Applications/Daemon Monitor.app/Contents/MacOS/DaemonMonitor')
     for line in subprocess.run(['/bin/ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout.splitlines():
         parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[1] == expected:
+        if len(parts) == 2 and parts[1] in (expected, expected + ' --background'):
             try: os.kill(int(parts[0]), signal.SIGTERM)
             except ProcessLookupError: pass
     backup = installed.with_suffix('.app.previous')
@@ -39,7 +39,7 @@ print('[4/5] Configuring startup at login...')
 agent.parent.mkdir(parents=True, exist_ok=True)
 agent.write_bytes(plistlib.dumps({
     'Label': label,
-    'ProgramArguments': [str(installed / 'Contents/MacOS/DaemonMonitor')],
+    'ProgramArguments': [str(installed / 'Contents/MacOS/DaemonMonitor'), '--background'],
     'RunAtLoad': True,
     'KeepAlive': {'SuccessfulExit': False},
     'ThrottleInterval': 10,

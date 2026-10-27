@@ -256,6 +256,33 @@ enum MonitorTests {
         precondition(!attached.needsRebuild)
     }
 
+    static func controlWindowRecovery() {
+        let suite = "DaemonMonitorTests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set("preserve me", forKey: "UnrelatedSetting")
+        let placement = MenuBarPlacement(preferences: preferences)
+        let original = placement.autosaveName
+        placement.reset()
+        let reset = placement.autosaveName
+        precondition(reset != original, "Reset must use fresh AppKit placement rather than the hidden saved position")
+        precondition(MenuBarPlacement(preferences: preferences).autosaveName == reset, "The new placement must survive relaunch")
+        placement.reset()
+        precondition(placement.autosaveName != reset)
+        precondition(preferences.string(forKey: "UnrelatedSetting") == "preserve me")
+
+        let monitor = Monitor(helper: FakeHelper().call)
+        precondition(monitor.contentSize == NSSize(width: 320, height: 160))
+        monitor.selectedID = "image"
+        precondition(monitor.contentSize == NSSize(width: 360, height: 274))
+        monitor.settingsExpanded = true
+        precondition(monitor.contentSize == NSSize(width: 360, height: 434))
+        monitor.performanceID = "bridge"
+        precondition(monitor.contentSize == NSSize(width: 400, height: 474))
+        monitor.performanceID = "voice-queue"
+        precondition(monitor.contentSize == NSSize(width: 400, height: 506))
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -272,6 +299,7 @@ enum MonitorTests {
         saveStartupWithoutModel()
         chartSampleSelection()
         menuBarAttachmentRecovery()
-        print("Passed 16 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, and menu bar attachment.")
+        controlWindowRecovery()
+        print("Passed 17 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, and independent window recovery.")
     }
 }

@@ -22,7 +22,13 @@ Each generator handles all ready models through one shared queue and loads the r
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
-If the icon disappears, open **Daemon Monitor** from Spotlight or Applications to restore it. The app recreates its menu item after wake, unlock, display changes, or a menu bar host restart, then retries briefly while macOS settles. A lightweight attachment check runs once a minute and repairs an item attached to a disconnected display. This does not add service polling. Menu bar placement is remembered, and an unexpected app exit is relaunched automatically; choosing **Quit** still quits.
+If the icon disappears, open **Daemon Monitor** from Spotlight or Applications. This opens the same controls in a compact window that works independently of the menu bar icon. Click **Reset icon position** to give this app a fresh saved menu bar placement. Click **Copy diagnostics** if the icon remains missing; the text includes the app version and display/attachment information, without credentials.
+
+![Daemon Monitor's independent window with Reset icon position and Copy diagnostics controls](docs/images/recovery-window.jpg)
+
+Menu bar clicks still open the attached popover. The independent window also supports settings and performance history, and hides when you click away, press Escape, or close it. Its three-dot menu has **Open logs** and **Quit**. Login startup stays in the background.
+
+The app recreates its menu item after wake, unlock, display changes, or a menu bar host restart, then retries briefly while macOS settles. A lightweight attachment check runs once a minute and repairs an item attached to a disconnected display. This does not add service polling. Menu bar placement is remembered, and the login agent relaunches the monitor after an unexpected exit; choosing **Quit** still quits.
 
 macOS can temporarily hide menu bar items when space is limited; move the icon farther right with Command-drag if it gets crowded. See Apple's [menu bar availability notes](https://developer.apple.com/documentation/appkit/nsstatusbar). The monitor records its version and menu-item attachment details in `~/Library/Application Support/DaemonMonitor/logs/app.log` to help diagnose a recurrence.
 

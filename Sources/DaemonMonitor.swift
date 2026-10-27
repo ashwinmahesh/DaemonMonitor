@@ -649,6 +649,64 @@ struct PopoverView: View {
     }
 }
 
+extension Monitor {
+    var contentSize: NSSize {
+        if let id = performanceID {
+            return NSSize(width: 400, height: family(id) == "bridge" ? 474 : 506)
+        }
+        if let id = selectedID {
+            let base: CGFloat = id == "image" ? 274 : id == "voice" ? 244 : id == "bridge" ? 218 : 188
+            let extra: CGFloat = settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
+            let modelInfo: CGFloat = statuses.first(where: { $0.id == id })?.activeModelSummary == nil ? 0 : 32
+            return NSSize(width: 360, height: base + extra + modelInfo + (error == nil ? 0 : 76))
+        }
+        return NSSize(width: 320, height: notice == nil ? 160 : 244)
+    }
+}
+
+final class MenuBarPlacement {
+    private let preferences: UserDefaults
+    init(preferences: UserDefaults = .standard) { self.preferences = preferences }
+    var autosaveName: String {
+        let revision = preferences.integer(forKey: "MenuBarPlacementRevision")
+        return revision > 0 ? "DaemonMonitor-\(revision)" : "DaemonMonitor"
+    }
+    func reset() {
+        let revision = preferences.integer(forKey: "MenuBarPlacementRevision")
+        preferences.set(revision < Int.max ? max(1, revision + 1) : 1, forKey: "MenuBarPlacementRevision")
+    }
+}
+
+struct ControlWindowView: View {
+    @ObservedObject var monitor: Monitor
+    let resetIcon: () -> Void
+    let copyDiagnostics: () -> Void
+    let openLogs: () -> Void
+    let quit: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            PopoverView(monitor: monitor).frame(width: monitor.contentSize.width, height: monitor.contentSize.height)
+            Divider()
+            HStack(spacing: 10) {
+                Button("Reset icon position", action: resetIcon)
+                    .help("Register a fresh menu bar position for Daemon Monitor")
+                Spacer(minLength: 0)
+                Button("Copy diagnostics", action: copyDiagnostics)
+                Menu {
+                    Button("Open logs", action: openLogs)
+                    Button("Quit Daemon Monitor", action: quit)
+                } label: { Image(systemName: "ellipsis") }
+                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("More options")
+            }.font(.system(size: 10)).buttonStyle(.plain).padding(.horizontal, 12).frame(height: 34)
+        }
+    }
+}
+
+final class MonitorPanel: NSPanel {
+    var dismiss: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { dismiss?() }
+}
+
 struct MenuBarAttachment {
     let itemVisible: Bool
     let hasButton: Bool
@@ -664,10 +722,12 @@ struct MenuBarAttachment {
     var needsRecovery: Bool { !itemVisible || needsRebuild }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let monitor = Monitor()
+    private let menuBarPlacement = MenuBarPlacement()
+    private var controlWindow: MonitorPanel?
     private var timer: Timer?
     private var pollingInterval: TimeInterval?
     private var focusObservers: [NSObjectProtocol] = []
@@ -706,7 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             focusObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let self,
                       let window = notification.object as? NSWindow,
-                      window === self.popover.contentViewController?.view.window else { return }
+                      window === self.popover.contentViewController?.view.window || window === self.controlWindow else { return }
                 self.updatePollingSchedule()
             })
         }
@@ -741,6 +801,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusWatchdog = watchdog
         scheduleStatusRecovery(reason: "launch verification")
         updatePollingSchedule()
+        // Login startup stays in the background; an explicit launch must remain
+        // usable even when macOS does not expose the status item.
+        if !CommandLine.arguments.contains("--background") {
+            DispatchQueue.main.async { [weak self] in self?.showControlWindow() }
+        }
     }
     private var statusAttachment: MenuBarAttachment {
         let window = statusItem?.button?.window
@@ -777,7 +842,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             statusVisibility?.invalidate()
             if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            item.autosaveName = "DaemonMonitor"
+            item.autosaveName = NSStatusItem.AutosaveName(menuBarPlacement.autosaveName)
             item.behavior = []
             statusItem = item
             statusVisibility = item.observe(\.isVisible, options: [.new]) { [weak self] _, change in
@@ -838,7 +903,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt], execute: verification)
     }
     private func updatePollingSchedule() {
-        let focused = popover.isShown && NSApp.isActive && popover.contentViewController?.view.window?.isKeyWindow == true
+        let focused = NSApp.isActive && ((popover.isShown && popover.contentViewController?.view.window?.isKeyWindow == true)
+            || (controlWindow?.isVisible == true && controlWindow?.isKeyWindow == true))
         monitor.performance.setSampling(focused: focused)
         let interval: TimeInterval = focused ? 15 : 15 * 60
         guard pollingInterval != interval else { return }
@@ -854,6 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard outsideClickMonitor == nil else { return }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             self?.popover.performClose(nil)
+            self?.hideControlWindow()
         }
     }
     private func stopWatchingOutsideClicks() {
@@ -861,16 +928,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         outsideClickMonitor = nil
     }
     private func resize() {
-        if let id = monitor.performanceID {
-            popover.contentSize = NSSize(width: 400, height: monitor.family(id) == "bridge" ? 474 : 506)
-        } else if let id = monitor.selectedID {
-            let base: CGFloat = id == "image" ? 274 : id == "voice" ? 244 : id == "bridge" ? 218 : 188
-            let extra: CGFloat = monitor.settingsExpanded ? (id == "bridge" ? 188 : 160) : 0
-            let modelInfo: CGFloat = monitor.statuses.first(where: { $0.id == id })?.activeModelSummary == nil ? 0 : 32
-            popover.contentSize = NSSize(width: 360, height: base + extra + modelInfo + (monitor.error == nil ? 0 : 76))
-        } else {
-            popover.contentSize = NSSize(width: 320, height: monitor.notice == nil ? 160 : 244)
+        popover.contentSize = monitor.contentSize
+        if let window = controlWindow {
+            let top = window.frame.maxY
+            window.setContentSize(NSSize(width: monitor.contentSize.width, height: monitor.contentSize.height + 35))
+            window.setFrameOrigin(NSPoint(x: window.frame.minX, y: top - window.frame.height))
+            window.setFrame(window.constrainFrameRect(window.frame, to: window.screen), display: window.isVisible)
         }
+    }
+    private func showControlWindow() {
+        guard !terminating else { return }
+        popover.performClose(nil)
+        if controlWindow == nil {
+            let panel = MonitorPanel(contentRect: NSRect(origin: .zero, size: NSSize(width: 320, height: 195)),
+                styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+            panel.title = "Daemon Monitor"
+            panel.isReleasedWhenClosed = false
+            panel.becomesKeyOnlyIfNeeded = false
+            panel.level = .floating
+            panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+            panel.delegate = self
+            panel.dismiss = { [weak self] in self?.hideControlWindow() }
+            panel.contentViewController = NSHostingController(rootView: ControlWindowView(monitor: monitor,
+                resetIcon: { [weak self] in self?.resetIconPosition() },
+                copyDiagnostics: { [weak self] in self?.copyDiagnostics() },
+                openLogs: { [weak self] in self?.monitor.openLogs() }, quit: { NSApp.terminate(nil) }))
+            controlWindow = panel
+        }
+        resize()
+        controlWindow?.center()
+        monitor.refresh()
+        monitor.loadSettings()
+        monitor.performance.sample()
+        NSApp.activate(ignoringOtherApps: true)
+        controlWindow?.makeKeyAndOrderFront(nil)
+        watchOutsideClicks()
+        updatePollingSchedule()
+        logStatusAttachment("control window opened")
+    }
+    private func hideControlWindow() {
+        controlWindow?.orderOut(nil)
+        if !popover.isShown { stopWatchingOutsideClicks() }
+        updatePollingSchedule()
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === controlWindow { hideControlWindow(); return false }
+        return true
+    }
+    private func resetIconPosition() {
+        cancelStatusRecovery()
+        menuBarPlacement.reset()
+        restoreStatusItem(reason: "user reset icon position", rebuild: true)
+        scheduleStatusRecovery(reason: "verify reset position")
+    }
+    private func copyDiagnostics() {
+        let state = statusAttachment
+        let displays = NSScreen.screens.map { screen in
+            let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.stringValue ?? "none"
+            return "Display \(id): \(NSStringFromRect(screen.frame)); right menu area=\(screen.auxiliaryTopRightArea.map(NSStringFromRect) ?? "none")"
+        }.joined(separator: "\n")
+        let text = """
+        Daemon Monitor \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
+        \(ProcessInfo.processInfo.operatingSystemVersionString)
+        Menu bar visible: \(NSMenu.menuBarVisible()); placement: \(menuBarPlacement.autosaveName)
+        Item visible: \(state.itemVisible); button: \(state.hasButton); window: \(state.hasWindow); size: \(state.hasUsableSize)
+        Item display: \(state.displayID.map(String.init) ?? "none"); current displays: \(state.currentDisplayIDs.sorted())
+        Item frame: \(statusItem?.button?.window.map { NSStringFromRect($0.frame) } ?? "none")
+        \(displays)
+        """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
     @objc private func clickStatusItem(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp { showMenu(); return }
@@ -878,6 +1005,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func showPopover() {
         guard let button = statusItem.button else { return }
+        hideControlWindow()
         monitor.refresh()
         monitor.loadSettings()
         monitor.performance.sample()
@@ -888,6 +1016,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func showMenu() {
         popover.performClose(nil)
+        hideControlWindow()
         let menu = NSMenu()
         menu.addItem(withTitle: "Refresh status", action: #selector(refreshStatus), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open logs", action: #selector(openLogs), keyEquivalent: "").target = self
@@ -905,7 +1034,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         updatePollingSchedule()
     }
     func popoverDidClose(_ notification: Notification) {
-        stopWatchingOutsideClicks()
+        if controlWindow?.isVisible != true { stopWatchingOutsideClicks() }
         updatePollingSchedule()
     }
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -914,21 +1043,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     func applicationDidResignActive(_ notification: Notification) {
         popover.performClose(nil)
+        hideControlWindow()
         updatePollingSchedule()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if popover.isShown && !statusAttachment.needsRecovery {
-            NSApp.activate(ignoringOtherApps: true)
-            popover.contentViewController?.view.window?.makeKey()
-            return false
-        }
         cancelStatusRecovery()
         restoreStatusItem(reason: "reopen", rebuild: true)
-        // AppKit attaches the replacement status button on a subsequent run loop.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, !self.terminating else { return }
-            self.showPopover()
-        }
+        showControlWindow()
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
