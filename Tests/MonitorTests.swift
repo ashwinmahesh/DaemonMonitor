@@ -230,6 +230,32 @@ enum MonitorTests {
         precondition(history.sample(near: Date(timeIntervalSince1970: 9000)) == nil)
     }
 
+    static func menuBarAttachmentRecovery() {
+        let attached = MenuBarAttachment(itemVisible: true, hasButton: true, hasWindow: true, hasUsableSize: true,
+            displayID: 42, currentDisplayIDs: [42, 99])
+        precondition(!attached.needsRecovery)
+        // The old recovery only checked that a window existed. A disconnected
+        // display must trigger recreation even while AppKit reports visibility.
+        for display in [UInt32(7), nil] {
+            let stale = MenuBarAttachment(itemVisible: true, hasButton: true, hasWindow: true, hasUsableSize: true,
+                displayID: display, currentDisplayIDs: [42, 99])
+            precondition(stale.needsRebuild && stale.needsRecovery)
+        }
+        for (button, window) in [(false, false), (true, false)] {
+            let missing = MenuBarAttachment(itemVisible: true, hasButton: button, hasWindow: window, hasUsableSize: true,
+                displayID: 42, currentDisplayIDs: [42])
+            precondition(missing.needsRebuild)
+        }
+        let zeroSize = MenuBarAttachment(itemVisible: true, hasButton: true, hasWindow: true, hasUsableSize: false,
+            displayID: 42, currentDisplayIDs: [42])
+        precondition(zeroSize.needsRebuild)
+        let hidden = MenuBarAttachment(itemVisible: false, hasButton: true, hasWindow: true, hasUsableSize: true,
+            displayID: 42, currentDisplayIDs: [42])
+        precondition(hidden.needsRecovery && !hidden.needsRebuild)
+        // Temporary menu-bar auto-hide/crowding is not evidence of detachment.
+        precondition(!attached.needsRebuild)
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -245,6 +271,7 @@ enum MonitorTests {
         runtimeModelStatus()
         saveStartupWithoutModel()
         chartSampleSelection()
-        print("Passed 15 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, and chart inspection.")
+        menuBarAttachmentRecovery()
+        print("Passed 16 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, and menu bar attachment.")
     }
 }

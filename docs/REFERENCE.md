@@ -113,7 +113,11 @@ Build without installing:
 
 The build targets Apple Silicon and macOS 13+, uses the local Swift SDK, and ad hoc signs the bundle for local use. `./install.sh` builds and installs the app and its login agent; it does not restart monitored daemons. `./uninstall.sh` removes only the monitor and its agent, retaining saved configuration and logs.
 
-The menu item has a stable `DaemonMonitor` autosave name and stays visible independently of the popover. Visibility observation and wake/session/display notifications coalesce recovery work without an extra polling timer. Reopening a closed popover rebuilds the item and waits briefly for AppKit to attach the new anchor before opening; reopening an already visible popover keeps its anchor. Recovery observations and pending work are cleared on termination. The app log records recovery events, but `NSStatusItem.isVisible` cannot prove an item is unobscured when the menu bar runs out of space.
+The menu item has a stable `DaemonMonitor` autosave name and accessibility identifier. Wake/session/display and menu-bar-host restart notifications recreate the item, then check attachment after 0.5, 2, and 5 seconds, stopping as soon as it is healthy. Recovery requests coalesce, and generation checks reject stale callbacks. A popover attached to a replaced button closes before removal. Sleep/session deactivation cancels recovery until wake/session activation.
+
+A 60-second timer with 15-second tolerance checks only local AppKit objects. It repairs hidden items, missing buttons/windows, and items whose window has no current display. It adds no process, health, or network calls. Temporary auto-hide or crowding alone does not trigger recreation. Reopening a closed popover rebuilds the item and waits briefly for AppKit to attach the new anchor before opening; an already visible popover keeps a healthy anchor. Recovery work, observers, and timers are cleared on termination.
+
+The login agent uses `KeepAlive: {SuccessfulExit: false}` and a 10-second throttle to relaunch the monitor after an unexpected nonzero exit. A normal **Quit** exits successfully and stays closed. The monitor version, OS, PID, display IDs, window attachment, and frame appear in `logs/app.log`; no service credentials are added to these diagnostics. Attachment checks cannot prove the icon is unobscured: Apple's [`isVisible` documentation](https://developer.apple.com/documentation/appkit/nsstatusitem/isvisible) notes that it remains true when menu-bar space is insufficient.
 
 ### Control CLI
 

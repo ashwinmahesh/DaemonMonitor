@@ -649,6 +649,21 @@ struct PopoverView: View {
     }
 }
 
+struct MenuBarAttachment {
+    let itemVisible: Bool
+    let hasButton: Bool
+    let hasWindow: Bool
+    let hasUsableSize: Bool
+    let displayID: UInt32?
+    let currentDisplayIDs: Set<UInt32>
+
+    var needsRebuild: Bool {
+        guard hasButton, hasWindow, hasUsableSize, let displayID else { return true }
+        return !currentDisplayIDs.contains(displayID)
+    }
+    var needsRecovery: Bool { !itemVisible || needsRebuild }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -660,12 +675,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var statusVisibility: NSKeyValueObservation?
     private var statusRecovery: DispatchWorkItem?
+    private var statusWatchdog: Timer?
+    private var statusRecoveryGeneration = 0
+    private var pendingStatusRebuild = false
+    private var sessionInactive = false
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let peers = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "local.daemonmonitor")
         if peers.contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(.accessory)
+        NSLog("Daemon Monitor %@ (%@); %@; pid=%d", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+              Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+              ProcessInfo.processInfo.operatingSystemVersionString, ProcessInfo.processInfo.processIdentifier)
         restoreStatusItem(reason: "launch")
         popover.behavior = .transient
         popover.animates = true
@@ -689,18 +711,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             })
         }
         focusObservers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.scheduleStatusRecovery(reason: "display change")
+            self?.scheduleStatusRecovery(reason: "display change", rebuild: true)
         })
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.scheduleStatusRecovery(reason: "wake or unlock")
+                self?.sessionInactive = false
+                self?.scheduleStatusRecovery(reason: "wake or unlock", rebuild: true)
             })
         }
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.sessionInactive = true
+                self?.cancelStatusRecovery()
+            })
+        }
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.checkStatusItem(reason: "space change")
+        })
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            if ["com.apple.SystemUIServer", "com.apple.controlcenter"].contains(application?.bundleIdentifier ?? "") {
+                self?.scheduleStatusRecovery(reason: "menu bar host relaunched", rebuild: true)
+            }
+        })
+        // Only inspect local AppKit objects here; no service/process/network polling.
+        let watchdog = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.checkStatusItem(reason: "attachment check") }
+        watchdog.tolerance = 15
+        RunLoop.main.add(watchdog, forMode: .common)
+        statusWatchdog = watchdog
+        scheduleStatusRecovery(reason: "launch verification")
         updatePollingSchedule()
+    }
+    private var statusAttachment: MenuBarAttachment {
+        let window = statusItem?.button?.window
+        return MenuBarAttachment(itemVisible: statusItem?.isVisible == true,
+            hasButton: statusItem?.button != nil, hasWindow: window != nil,
+            hasUsableSize: !NSMenu.menuBarVisible() || (window.map { $0.frame.width > 0 && $0.frame.height > 0 } ?? false),
+            displayID: (window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+            currentDisplayIDs: Set(NSScreen.screens.compactMap {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            }))
+    }
+    private func logStatusAttachment(_ reason: String) {
+        let state = statusAttachment
+        NSLog("Menu bar item (%@): visible=%d button=%d window=%d size=%d display=%@ currentDisplays=%@ frame=%@", reason,
+              state.itemVisible ? 1 : 0, state.hasButton ? 1 : 0, state.hasWindow ? 1 : 0,
+              state.hasUsableSize ? 1 : 0,
+              state.displayID.map(String.init) ?? "none", state.currentDisplayIDs.sorted().map(String.init).joined(separator: ","),
+              statusItem?.button?.window.map { NSStringFromRect($0.frame) } ?? "none")
+    }
+    private func checkStatusItem(reason: String) {
+        guard !terminating, !sessionInactive, statusRecovery == nil else { return }
+        if statusAttachment.needsRecovery { scheduleStatusRecovery(reason: reason) }
     }
     private func restoreStatusItem(reason: String, rebuild: Bool = false) {
         guard !terminating else { return }
-        if rebuild || statusItem == nil || statusItem.button?.window == nil {
+        if rebuild || statusAttachment.needsRebuild {
+            // A popover must not retain a removed status button as its anchor.
+            if popover.isShown {
+                let animates = popover.animates
+                popover.animates = false
+                popover.performClose(nil)
+                popover.animates = animates
+            }
             statusVisibility?.invalidate()
             if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -721,16 +794,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "Daemon Monitor — \(monitor.statuses.filter(\.healthy).count) of 5 healthy"
             button.setAccessibilityLabel("Daemon Monitor")
+            button.setAccessibilityIdentifier("DaemonMonitor")
             button.needsDisplay = true
         }
-        NSLog("Menu bar item restored (%@); visible=%d", reason, statusItem.isVisible ? 1 : 0)
+        logStatusAttachment(reason)
     }
-    private func scheduleStatusRecovery(reason: String) {
-        guard !terminating else { return }
+    private func cancelStatusRecovery() {
+        statusRecoveryGeneration += 1
         statusRecovery?.cancel()
-        let recovery = DispatchWorkItem { [weak self] in self?.restoreStatusItem(reason: reason) }
+        statusRecovery = nil
+        pendingStatusRebuild = false
+    }
+    private func scheduleStatusRecovery(reason: String, rebuild: Bool = false) {
+        guard !terminating, !sessionInactive else { return }
+        pendingStatusRebuild = pendingStatusRebuild || rebuild
+        statusRecoveryGeneration += 1
+        let generation = statusRecoveryGeneration
+        statusRecovery?.cancel()
+        let recovery = DispatchWorkItem { [weak self] in
+            guard let self, !self.terminating, !self.sessionInactive, generation == self.statusRecoveryGeneration else { return }
+            let rebuild = self.pendingStatusRebuild
+            self.pendingStatusRebuild = false
+            self.restoreStatusItem(reason: reason, rebuild: rebuild)
+            self.verifyStatusAttachment(reason: reason, generation: generation, attempt: 0)
+        }
         statusRecovery = recovery
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: recovery)
+    }
+    private func verifyStatusAttachment(reason: String, generation: Int, attempt: Int) {
+        let delays: [TimeInterval] = [0.5, 2, 5]
+        let verification = DispatchWorkItem { [weak self] in
+            guard let self, !self.terminating, !self.sessionInactive, generation == self.statusRecoveryGeneration else { return }
+            if self.statusAttachment.needsRecovery {
+                self.restoreStatusItem(reason: reason + " retry \(attempt + 1)", rebuild: true)
+                if attempt + 1 < delays.count {
+                    self.verifyStatusAttachment(reason: reason, generation: generation, attempt: attempt + 1)
+                    return
+                }
+            }
+            self.statusRecovery = nil
+        }
+        statusRecovery = verification
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt], execute: verification)
     }
     private func updatePollingSchedule() {
         let focused = popover.isShown && NSApp.isActive && popover.contentViewController?.view.window?.isKeyWindow == true
@@ -803,17 +908,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         stopWatchingOutsideClicks()
         updatePollingSchedule()
     }
-    func applicationDidBecomeActive(_ notification: Notification) { updatePollingSchedule() }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        checkStatusItem(reason: "application activated")
+        updatePollingSchedule()
+    }
     func applicationDidResignActive(_ notification: Notification) {
         popover.performClose(nil)
         updatePollingSchedule()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if popover.isShown {
+        if popover.isShown && !statusAttachment.needsRecovery {
             NSApp.activate(ignoringOtherApps: true)
             popover.contentViewController?.view.window?.makeKey()
             return false
         }
+        cancelStatusRecovery()
         restoreStatusItem(reason: "reopen", rebuild: true)
         // AppKit attaches the replacement status button on a subsequent run loop.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -824,7 +933,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
-        statusRecovery?.cancel()
+        cancelStatusRecovery()
+        statusWatchdog?.invalidate()
         statusVisibility?.invalidate()
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         monitor.performance.stop()

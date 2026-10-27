@@ -41,6 +41,8 @@ agent.write_bytes(plistlib.dumps({
     'Label': label,
     'ProgramArguments': [str(installed / 'Contents/MacOS/DaemonMonitor')],
     'RunAtLoad': True,
+    'KeepAlive': {'SuccessfulExit': False},
+    'ThrottleInterval': 10,
     'ProcessType': 'Interactive',
     'StandardOutPath': str(support / 'logs/app.log'),
     'StandardErrorPath': str(support / 'logs/app.log')
