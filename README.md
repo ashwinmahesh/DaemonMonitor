@@ -18,7 +18,7 @@ Status updates every **15 seconds** while the popover is open and focused, and e
 
 Starting a generator also starts or reuses its queue. Stopping the generator leaves the queue running. A busy generator will ask you to wait for its current job before stopping. Stopping AI Bridge also ends any provider work it is running.
 
-Each generator handles all ready models through one shared queue and loads the requested model at runtime. Changing models between jobs keeps the same service, port, and performance history. Hover over its health dot to see the active model and current stage. An idle generator with no model loaded is healthy.
+Each generator handles all ready models through one shared queue and loads the requested model at runtime. Changing models between jobs keeps the same service, port, and performance history. Hover over either generator's health dot to see its port, active model, current stage, and queued/running job counts, including when the queue is empty or paused. An idle generator with no model loaded is healthy.
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 

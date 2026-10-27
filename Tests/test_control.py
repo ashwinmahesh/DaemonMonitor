@@ -139,6 +139,35 @@ class ControllerTests(unittest.TestCase):
                                 {mode:'queue-crud'}, {version:None}, {version:'not-a-version'}, {'queue_scope':'model'}):
                 self.assertFalse(self.controller.matches(item, {**state, **patch_value}), patch_value)
 
+    def test_voice_tooltip_uses_published_stage_and_sparse_queue_counts(self):
+        item = self.controller.desired('voice')
+        for stage, counts, active, busy, paused, expected in (
+                ('ready', {}, None, False, False, 'Queue: 0 queued · 0 running'),
+                ('loading', {'queued': 3, 'running': 1}, 'higgs', True, False, 'Queue: 3 queued · 1 running'),
+                ('ready', {'queued': 2, 'done': 8}, 'voxcpm2', False, True, 'Queue: 2 queued · 0 running · Paused')):
+            state = self.runtime_state('voice', status=stage, active_model=active, busy=busy,
+                queue_counts=counts, queue_paused=paused)
+            state.pop('queue')  # VoiceGen /health has no nested queue or stage.
+            with patch.object(self.controller, 'request', return_value=state), patch.object(self.controller, 'owned_processes', return_value=[123]):
+                status = self.controller.inspect(item)
+            self.assertTrue(status['healthy'])
+            self.assertEqual(status['port'], 5743)
+            self.assertIn('Active: ' + (active or 'None loaded'), status['detail'])
+            self.assertIn('Stage: ' + stage, status['detail'])
+            self.assertIn(expected, status['detail'])
+            self.assertEqual(' · Busy' in status['detail'], busy)
+
+    def test_voice_tooltip_does_not_invent_queue_counts_when_storage_fails(self):
+        item = self.controller.desired('voice')
+        state = self.runtime_state('voice', queue_counts={},
+            queue_storage={'status':'unavailable','message':'SQLite is locked'})
+        state.pop('queue')
+        with patch.object(self.controller, 'request', return_value=state), patch.object(self.controller, 'owned_processes', return_value=[123]):
+            status = self.controller.inspect(item)
+        self.assertFalse(status['healthy'])
+        self.assertIn('SQLite is locked', status['detail'])
+        self.assertNotIn('Queue:', status['detail'])
+
     def test_voice_queue_uses_its_published_api_version_contract(self):
         item = self.controller.desired('voice-queue')
         state = {'service':'voicegen-queue', 'role':'queue-crud', 'api_version':'4.0.0',

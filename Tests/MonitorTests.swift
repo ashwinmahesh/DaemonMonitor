@@ -135,11 +135,15 @@ enum MonitorTests {
     }
 
     static func tooltipWrapping() {
-        let label = StatusDot.tooltipLabel(for: String(repeating: "The service did not respond to its health check. ", count: 8))
-        let required = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: label.bounds.width, height: 10000))
-        precondition(label.bounds.width <= 260, "Long failure reasons must wrap within the popover")
-        precondition(label.bounds.height >= required.height, "Wrapped failure reasons must remain fully visible")
-        precondition(label.bounds.height > label.font!.boundingRectForFont.height)
+        for text in [String(repeating: "The service did not respond to its health check. ", count: 8),
+                     "Running on port 5743\nHealthy · ready\nActive: None loaded\nStage: ready\nQueue: 0 queued · 0 running",
+                     "Running on port 5743\nHealthy · loading · Busy\nActive: voxcpm2\nStage: loading\nQueue: 3 queued · 1 running · Paused"] {
+            let label = StatusDot.tooltipLabel(for: text)
+            let required = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: label.bounds.width, height: 10000))
+            precondition(label.bounds.width <= 260, "Status details must wrap within the popover")
+            precondition(label.bounds.height >= required.height, "Every tooltip line must remain fully visible")
+            precondition(label.bounds.height > label.font!.boundingRectForFont.height)
+        }
     }
 
     static func statusRecovery() {

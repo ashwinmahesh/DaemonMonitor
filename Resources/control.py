@@ -312,11 +312,16 @@ class Controller:
                 active_model = active_model if isinstance(active_model, str) else None
                 detail += '\nActive: ' + str(active_model or 'None loaded')
                 queue = state.get('queue') or {}
-                stage = queue.get('stage') or state.get('stage')
+                stage = queue.get('stage') or state.get('stage') or state.get('status')
                 if stage: detail += '\nStage: ' + str(stage)
                 counts = queue.get('counts') or state.get('queue_counts') or queue
+                # VoiceGen publishes sparse status totals at the top level: an
+                # empty dictionary means zero jobs when queue storage is healthy.
+                if isinstance(state.get('queue_counts'), dict) and (state.get('queue_storage') or {}).get('status', 'ready') == 'ready':
+                    counts = {'queued': 0, 'running': 0, **counts}
                 count_text = [str(counts[key]) + ' ' + key for key in ('waiting', 'queued', 'running', 'blocked')
                               if type(counts.get(key)) is int]
+                if queue.get('paused', state.get('queue_paused')) is True: count_text.append('Paused')
                 if count_text: detail += '\nQueue: ' + ' · '.join(count_text)
                 blocked = queue.get('blocked_reason')
                 if blocked: detail += '\nWaiting: ' + str(blocked)

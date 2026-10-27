@@ -57,6 +57,8 @@ Version values must be numeric dotted strings, such as `4.0.0`, and the project 
 
 `active_model` is nullable and describes the selected/loaded backend. It is read-only information in generator tooltips and startup settings, and is never used to identify a process. Global queue counts, stage, and a blocked reason appear in the tooltip when supplied.
 
+Image's tooltip reads the stage and counts from `queue`; Voice's reads its stage from `status` and counts from `queue_counts`. An empty Voice count map means zero queued/running jobs when queue storage is healthy. A queue-storage failure keeps its error visible without inventing zero counts. Both tooltips indicate a paused queue when reported.
+
 Busy generators refuse stop requests, including model loading, switching, expansion and preview work. The monitor rechecks health before stopping and refuses to terminate a runtime generator whose idle state cannot be confirmed. Idle generators and queues receive SIGTERM only after checks of the Python command, project working directory, port, and process identity. Processes from other checkouts or test ports are ignored; termination is never forced.
 
 ### AI Bridge
