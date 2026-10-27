@@ -283,6 +283,30 @@ enum MonitorTests {
         precondition(monitor.contentSize == NSSize(width: 400, height: 506))
     }
 
+    static func popoverPresentationRouting() {
+        let attached = MenuBarAttachment(itemVisible: true, hasButton: true, hasWindow: true, hasUsableSize: true,
+            displayID: 42, currentDisplayIDs: [42])
+        let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+        let button = NSRect(x: 1500, y: 970, width: 24, height: 30)
+        precondition(attached.canPresentPopover(buttonFrame: button, screenFrame: screen),
+                     "A healthy menu bar anchor must use the widget popover for Spotlight launches")
+        for frame in [NSRect(x: -100, y: 970, width: 24, height: 30),
+                      NSRect(x: 1500, y: 1010, width: 24, height: 30), .zero] {
+            precondition(!attached.canPresentPopover(buttonFrame: frame, screenFrame: screen),
+                         "An off-screen or collapsed anchor must retain the borderless recovery fallback")
+        }
+        precondition(!attached.canPresentPopover(buttonFrame: nil, screenFrame: screen))
+        precondition(!attached.canPresentPopover(buttonFrame: button, screenFrame: nil))
+        let menuAreas = [NSRect(x: 0, y: 968, width: 740, height: 32),
+                         NSRect(x: 860, y: 968, width: 740, height: 32)]
+        precondition(attached.canPresentPopover(buttonFrame: button, screenFrame: screen, menuAreas: menuAreas))
+        precondition(!attached.canPresentPopover(buttonFrame: NSRect(x: 790, y: 970, width: 24, height: 30),
+            screenFrame: screen, menuAreas: menuAreas), "Do not anchor the popover underneath a camera notch")
+        let detached = MenuBarAttachment(itemVisible: true, hasButton: true, hasWindow: true, hasUsableSize: true,
+            displayID: 7, currentDisplayIDs: [42])
+        precondition(!detached.canPresentPopover(buttonFrame: button, screenFrame: screen))
+    }
+
     static func main() {
         for on in [false, true] {
             for polling in [false, true] { transition(on: on, polling: polling) }
@@ -300,6 +324,7 @@ enum MonitorTests {
         chartSampleSelection()
         menuBarAttachmentRecovery()
         controlWindowRecovery()
-        print("Passed 17 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, and independent window recovery.")
+        popoverPresentationRouting()
+        print("Passed 18 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, recovery, and popover routing.")
     }
 }

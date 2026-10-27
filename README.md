@@ -22,11 +22,13 @@ Each generator handles all ready models through one shared queue and loads the r
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
-If the icon disappears, open **Daemon Monitor** from Spotlight or Applications. This opens the same controls in a compact window that works independently of the menu bar icon. Click **Reset icon position** to give this app a fresh saved menu bar placement. Click **Copy diagnostics** if the icon remains missing; the text includes the app version and display/attachment information, without credentials.
+Opening **Daemon Monitor** from Spotlight or Applications opens the attached widget popover, just like clicking its menu bar icon. If its menu bar anchor is unavailable, the app retries briefly, then opens a borderless widget near the top-right corner of the screen. Neither view has a title bar or standard window buttons.
 
-![Daemon Monitor's independent window with Reset icon position and Copy diagnostics controls](docs/images/recovery-window.jpg)
+Right-click the popover header or menu bar icon and choose **Menu bar recovery…** to open the recovery widget yourself. Click **Reset icon position** to give this app a fresh saved menu bar placement. Click **Copy diagnostics** if the icon remains missing; the text includes the app version and display/attachment information, without credentials.
 
-Menu bar clicks still open the attached popover. The independent window also supports settings and performance history, and hides when you click away, press Escape, or close it. Its three-dot menu has **Open logs** and **Quit**. Login startup stays in the background.
+![Borderless recovery widget with Reset icon position and Copy diagnostics controls, without a title bar or window buttons](docs/images/recovery-window.jpg)
+
+The recovery widget supports the same settings and performance history, and hides when you click away or press Escape. Its three-dot menu has **Open logs** and **Quit**. Login startup stays in the background.
 
 The app recreates its menu item after wake, unlock, display changes, or a menu bar host restart, then retries briefly while macOS settles. A lightweight attachment check runs once a minute and repairs an item attached to a disconnected display. This does not add service polling. Menu bar placement is remembered, and the login agent relaunches the monitor after an unexpected exit; choosing **Quit** still quits.
 

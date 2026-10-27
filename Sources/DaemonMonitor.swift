@@ -598,6 +598,7 @@ struct SettingsView: View {
 
 struct PopoverView: View {
     @ObservedObject var monitor: Monitor
+    var openRecovery: (() -> Void)? = nil
     var body: some View {
         Group {
             if let id = monitor.performanceID {
@@ -615,6 +616,8 @@ struct PopoverView: View {
                         Button { monitor.refresh() } label: {
                             Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 20)
                         }.buttonStyle(.plain).foregroundStyle(.secondary).help("Refresh status").accessibilityLabel("Refresh status")
+                    }.contextMenu {
+                        if let openRecovery { Button("Menu bar recovery…", action: openRecovery) }
                     }
                     Divider()
                     if monitor.statuses.isEmpty {
@@ -698,12 +701,13 @@ struct ControlWindowView: View {
                 } label: { Image(systemName: "ellipsis") }
                     .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("More options")
             }.font(.system(size: 10)).buttonStyle(.plain).padding(.horizontal, 12).frame(height: 34)
-        }
+        }.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
 final class MonitorPanel: NSPanel {
     var dismiss: (() -> Void)?
+    override var canBecomeKey: Bool { true }
     override func cancelOperation(_ sender: Any?) { dismiss?() }
 }
 
@@ -720,6 +724,15 @@ struct MenuBarAttachment {
         return !currentDisplayIDs.contains(displayID)
     }
     var needsRecovery: Bool { !itemVisible || needsRebuild }
+    func canPresentPopover(buttonFrame: NSRect?, screenFrame: NSRect?, menuAreas: [NSRect] = []) -> Bool {
+        guard !needsRecovery, let buttonFrame, !buttonFrame.isEmpty, let screenFrame,
+              screenFrame.insetBy(dx: -1, dy: -1).contains(buttonFrame) else { return false }
+        // A status item can be logically visible while its saved position lies
+        // outside the unobscured portions of a notched display's menu bar.
+        return menuAreas.isEmpty || menuAreas.contains {
+            buttonFrame.minX >= $0.minX - 1 && buttonFrame.maxX <= $0.maxX + 1
+        }
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
@@ -739,6 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var statusRecoveryGeneration = 0
     private var pendingStatusRebuild = false
     private var sessionInactive = false
+    private var widgetPresentationGeneration = 0
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -752,7 +766,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: PopoverView(monitor: monitor))
+        popover.contentViewController = NSHostingController(rootView: PopoverView(monitor: monitor,
+            openRecovery: { [weak self] in self?.showControlWindow() }))
         resize()
         monitor.layoutChanged = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         monitor.statusChanged = { [weak self] in
@@ -804,8 +819,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // Login startup stays in the background; an explicit launch must remain
         // usable even when macOS does not expose the status item.
         if !CommandLine.arguments.contains("--background") {
-            DispatchQueue.main.async { [weak self] in self?.showControlWindow() }
+            DispatchQueue.main.async { [weak self] in self?.showWidget(reason: "explicit launch") }
         }
+    }
+    private var canPresentPopover: Bool {
+        guard let button = statusItem?.button, let window = button.window, window.isVisible,
+              let screen = window.screen else { return false }
+        return statusAttachment.canPresentPopover(buttonFrame: window.convertToScreen(button.convert(button.bounds, to: nil)),
+            screenFrame: screen.frame, menuAreas: [screen.auxiliaryTopLeftArea, screen.auxiliaryTopRightArea].compactMap { $0 })
     }
     private var statusAttachment: MenuBarAttachment {
         let window = statusItem?.button?.window
@@ -919,8 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func watchOutsideClicks() {
         guard outsideClickMonitor == nil else { return }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            self?.popover.performClose(nil)
-            self?.hideControlWindow()
+            self?.dismissWidget()
         }
     }
     private func stopWatchingOutsideClicks() {
@@ -938,17 +958,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     private func showControlWindow() {
         guard !terminating else { return }
+        widgetPresentationGeneration += 1
         popover.performClose(nil)
         if controlWindow == nil {
             let panel = MonitorPanel(contentRect: NSRect(origin: .zero, size: NSSize(width: 320, height: 195)),
-                styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+                styleMask: [.borderless], backing: .buffered, defer: false)
             panel.title = "Daemon Monitor"
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.isMovableByWindowBackground = true
             panel.isReleasedWhenClosed = false
             panel.becomesKeyOnlyIfNeeded = false
             panel.level = .floating
             panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             panel.delegate = self
-            panel.dismiss = { [weak self] in self?.hideControlWindow() }
+            panel.dismiss = { [weak self] in self?.dismissWidget() }
             panel.contentViewController = NSHostingController(rootView: ControlWindowView(monitor: monitor,
                 resetIcon: { [weak self] in self?.resetIconPosition() },
                 copyDiagnostics: { [weak self] in self?.copyDiagnostics() },
@@ -956,7 +981,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             controlWindow = panel
         }
         resize()
-        controlWindow?.center()
+        if let window = controlWindow, let screen = NSScreen.main ?? NSScreen.screens.first {
+            window.setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX - window.frame.width - 12,
+                                          y: screen.visibleFrame.maxY - window.frame.height - 8))
+        }
         monitor.refresh()
         monitor.loadSettings()
         monitor.performance.sample()
@@ -972,8 +1000,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         updatePollingSchedule()
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if sender === controlWindow { hideControlWindow(); return false }
+        if sender === controlWindow { dismissWidget(); return false }
         return true
+    }
+    private func dismissWidget() {
+        widgetPresentationGeneration += 1
+        popover.performClose(nil)
+        hideControlWindow()
+    }
+    private func showWidget(reason: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        if popover.isShown && canPresentPopover {
+            popover.contentViewController?.view.window?.makeKey()
+            return
+        }
+        cancelStatusRecovery()
+        restoreStatusItem(reason: reason, rebuild: statusAttachment.needsRecovery)
+        widgetPresentationGeneration += 1
+        presentWidget(generation: widgetPresentationGeneration, attempt: 0, reason: reason)
+    }
+    private func presentWidget(generation: Int, attempt: Int, reason: String) {
+        guard !terminating, generation == widgetPresentationGeneration else { return }
+        if canPresentPopover {
+            showPopover()
+            if !popover.isShown { showControlWindow() }
+        } else if attempt < 2 {
+            if attempt == 1 { restoreStatusItem(reason: reason + " anchor recovery", rebuild: true) }
+            // Newly registered status buttons need a run loop before anchoring.
+            DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.3 : 0.5)) { [weak self] in
+                self?.presentWidget(generation: generation, attempt: attempt + 1, reason: reason)
+            }
+        } else {
+            showControlWindow()
+        }
     }
     private func resetIconPosition() {
         cancelStatusRecovery()
@@ -1001,7 +1060,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc private func clickStatusItem(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp { showMenu(); return }
-        if popover.isShown { popover.performClose(sender) } else { showPopover() }
+        if popover.isShown { dismissWidget() } else { showWidget(reason: "menu bar click") }
     }
     private func showPopover() {
         guard let button = statusItem.button else { return }
@@ -1015,11 +1074,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         updatePollingSchedule()
     }
     private func showMenu() {
-        popover.performClose(nil)
-        hideControlWindow()
+        dismissWidget()
         let menu = NSMenu()
         menu.addItem(withTitle: "Refresh status", action: #selector(refreshStatus), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open logs", action: #selector(openLogs), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Menu bar recovery…", action: #selector(openRecovery), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Daemon Monitor", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
@@ -1028,12 +1087,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc private func refreshStatus() { monitor.refresh() }
     @objc private func openLogs() { monitor.openLogs() }
+    @objc private func openRecovery() { showControlWindow() }
     @objc private func quit() { NSApp.terminate(nil) }
     func popoverDidShow(_ notification: Notification) {
         watchOutsideClicks()
         updatePollingSchedule()
     }
     func popoverDidClose(_ notification: Notification) {
+        widgetPresentationGeneration += 1
         if controlWindow?.isVisible != true { stopWatchingOutsideClicks() }
         updatePollingSchedule()
     }
@@ -1042,18 +1103,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         updatePollingSchedule()
     }
     func applicationDidResignActive(_ notification: Notification) {
-        popover.performClose(nil)
-        hideControlWindow()
+        dismissWidget()
         updatePollingSchedule()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        cancelStatusRecovery()
-        restoreStatusItem(reason: "reopen", rebuild: true)
-        showControlWindow()
+        showWidget(reason: "reopen")
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
+        widgetPresentationGeneration += 1
         cancelStatusRecovery()
         statusWatchdog?.invalidate()
         statusVisibility?.invalidate()
