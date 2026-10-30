@@ -314,6 +314,8 @@ class Controller:
                 queue = state.get('queue') or {}
                 stage = queue.get('stage') or state.get('stage') or state.get('status')
                 if stage: detail += '\nStage: ' + str(stage)
+                progress = self.job_progress(item, state) if busy else None
+                if progress: detail += '\nProgress: ' + progress
                 counts = queue.get('counts') or state.get('queue_counts') or queue
                 # VoiceGen publishes sparse status totals at the top level: an
                 # empty dictionary means zero jobs when queue storage is healthy.
@@ -344,6 +346,48 @@ class Controller:
                     detail=detail, port=item['port'], state=state, pids=pids,
                     runtime_model_switching=runtime, active_model=active_model, busy=busy)
 
+    def job_progress(self, item, state):
+        """Readable progress for the running job; None when idle or the server predates progress reporting."""
+        if item['id'] == 'image': progress = state.get('progress')
+        else:
+            # VoiceGen health names the running job; its estimate lives on the job itself.
+            job = state.get('active_job')
+            if not (isinstance(job, str) and re.fullmatch(r'[0-9a-f]{32}', job)): return None
+            try: progress = self.request(item, '/api/jobs/' + job).get('progress')
+            except (OSError, ValueError, AttributeError, http.client.HTTPException): return None
+        return self.describe_progress(item['id'], progress)
+
+    @staticmethod
+    def describe_progress(family, progress, now=None):
+        if not isinstance(progress, dict) or type(progress.get('percent')) is not int: return None
+        now = time.time() if now is None else now
+        percent, phase = max(0, min(100, progress['percent'])), progress.get('phase')
+        if family == 'image':
+            parts = [str(percent) + '%']
+            image, total = progress.get('image'), progress.get('total_images')
+            if type(image) is int and type(total) is int and total > 1: parts.append('image %d of %d' % (image, total))
+            if isinstance(phase, str) and phase not in ('sampling', 'done'): parts.append(phase.replace('_', ' '))
+            remaining, updated = progress.get('estimated_remaining_seconds'), progress.get('updated')
+            # The estimate was made when the generator last saved progress.
+            if type(remaining) in (int, float) and type(updated) in (int, float): remaining = max(0, remaining - max(0, now - updated))
+        else:
+            # Voice progress is a time estimate, so mark it as approximate.
+            parts = ['~' + str(percent) + '%']
+            if progress.get('overdue') is True: parts.append('taking longer than usual')
+            elif phase in ('preparing', 'waiting'): parts.append(phase)
+            remaining = None if progress.get('overdue') is True else progress.get('eta_seconds')
+        if type(remaining) in (int, float) and remaining >= 0: parts.append(Controller.remaining_text(remaining, now))
+        return ' · '.join(parts)
+
+    @staticmethod
+    def remaining_text(seconds, now):
+        seconds = round(seconds)
+        if seconds < 10: return 'a few seconds left'
+        if seconds < 60: text = 'about %d sec left' % (5 * round(seconds / 5))
+        elif seconds < 3600: text = 'about %d min left' % max(1, round(seconds / 60))
+        else: text = 'about %d h %d min left' % divmod(round(seconds / 60), 60)
+        return text + ' (done ~' + time.strftime('%-I:%M %p', time.localtime(now + seconds)) + ')'
+
     def resolve(self, identifier, processes=None):
         record = read_json(self.active_file(identifier))
         if record:
@@ -357,9 +401,44 @@ class Controller:
     def snapshot(self):
         processes = self.processes()
         with ThreadPoolExecutor(max_workers=5) as pool:
-            statuses = list(pool.map(lambda identifier: self.resolve(identifier, processes)[1], IDS))
-        return {'ok': True, 'services': [{k: s[k] for k in ('id', 'name', 'running', 'healthy', 'detail', 'port',
-                    'runtime_model_switching', 'active_model', 'busy')} for s in statuses]}
+            resolved = dict(zip(IDS, pool.map(lambda identifier: self.resolve(identifier, processes), IDS)))
+        services = []
+        for identifier in IDS:
+            status = resolved[identifier][1]
+            row = {k: status[k] for k in ('id', 'name', 'running', 'healthy', 'detail', 'port',
+                   'runtime_model_switching', 'active_model', 'busy')}
+            if identifier in GENERATOR_SERVICES:
+                row['queue_paused'] = self.queue_paused(identifier, status['state'], *resolved[identifier + '-queue'])
+            services.append(row)
+        return {'ok': True, 'services': services}
+
+    def queue_paused(self, family, state, queue_item, queue_status):
+        """The persisted pause flag shared by a generator and its queue, or None when neither reports it."""
+        value = None
+        if state is not None:
+            # ImageGen nests queue state; VoiceGen's top-level flag is only meaningful with readable storage.
+            if family == 'image': value = (state.get('queue') or {}).get('paused')
+            elif (state.get('queue_storage') or {}).get('status', 'ready') == 'ready': value = state.get('queue_paused')
+        if not isinstance(value, bool) and queue_status['state'] is not None:
+            if family == 'voice': value = queue_status['state'].get('paused')
+            else:
+                try: value = self.request(queue_item, '/v1/queue').get('paused')
+                except (OSError, ValueError, AttributeError, http.client.HTTPException): value = None
+        return value if isinstance(value, bool) else None
+
+    def set_paused(self, family, paused):
+        """Pause or resume through each project's existing API; the active job always finishes."""
+        if family not in GENERATOR_SERVICES: raise ValueError('Only Image and Voice Generator queues can be paused.')
+        # Prefer the generator, then the standalone queue; both write the same SQLite flag.
+        for identifier in (family, family + '-queue'):
+            item, status = self.resolve(identifier)
+            if status['state'] is None: continue
+            if family == 'image': result = self.request(item, '/v1/queue', 'PATCH', {'paused': paused})
+            else: result = self.request(item, '/api/queue/' + ('pause' if paused else 'resume'), 'POST', {})
+            if not isinstance(result, dict) or result.get('paused') is not paused:
+                raise ValueError('The queue did not confirm the change. Refresh and try again.')
+            return {'ok': True, 'paused': paused}
+        raise ValueError('Start the generator or its queue to pause or resume processing.')
 
     def save(self, patch):
         return self.save_many([patch])
@@ -549,7 +628,7 @@ class Controller:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--support', type=Path, default=DEFAULT_SUPPORT)
-    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop', 'sample', 'history'))
+    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop', 'pause', 'resume', 'sample', 'history'))
     parser.add_argument('identifier', nargs='?', choices=IDS)
     parser.add_argument('--range', dest='range_name', choices=('5m', '30m', '1h', '6h', '24h', '3d', '7d'), default='5m')
     parser.add_argument('--interval', type=int, choices=(15, 60), default=60)
@@ -568,6 +647,9 @@ def main():
             else:
                 if args.identifier is None: raise ValueError('Choose a service for history.')
                 result = store.history(args.identifier, args.range_name)
+        elif args.action in ('pause', 'resume'):
+            if args.identifier not in GENERATOR_SERVICES: raise ValueError('Choose image or voice to pause or resume.')
+            result = controller.set_paused(args.identifier, args.action == 'pause')
         else: result = controller.action(args.identifier, args.action)
     except Exception as error:
         result = {'ok': False, 'error': str(error)}

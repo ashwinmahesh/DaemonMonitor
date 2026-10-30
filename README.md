@@ -10,15 +10,16 @@ Click the activity icon in the menu bar to open Daemon Monitor. Click outside th
 
 - **AI Bridge** has one on/off switch.
 - **Image Generator** and **Voice Generator** each have separate **Service** and **Queue** switches.
+- Their **Processing** switch shows whether the generator's job queue is running or paused. Switch it off to pause: the active job finishes, then waiting jobs stay saved until you switch it back on. Jobs sent with **Generate immediately** or **Run Now** still run while paused. It needs the generator or its queue running, and it is the same setting as the pause controls in each generator's own UI.
 - Click the **square-arrow button** beside a generator’s name to open its UI in your default browser. It becomes available when the service is running and uses its current port.
 - Hover over a **green dot** to see its running port. A **red dot** means stopped, starting, or unhealthy; hover over it to see the reason.
 - The header shows how many of the five services are online. Click the refresh button for an immediate check.
 
 Status updates every **15 seconds** while the popover is open and focused, and every **15 minutes** while hidden or unfocused. Opening it refreshes status immediately.
 
-Starting a generator also starts or reuses its queue. Stopping the generator leaves the queue running. A busy generator will ask you to wait for its current job before stopping. Stopping AI Bridge also ends any provider work it is running.
+Starting a generator also starts or reuses its queue. Stopping the generator leaves the queue running. Stopping or starting either one does not change whether the queue is paused. A busy generator will ask you to wait for its current job before stopping. Stopping AI Bridge also ends any provider work it is running.
 
-Each generator handles all ready models through one shared queue and loads the requested model at runtime. Changing models between jobs keeps the same service, port, and performance history. Hover over either generator's health dot to see its port, active model, current stage, and queued/running job counts, including when the queue is empty or paused. An idle generator with no model loaded is healthy.
+Each generator handles all ready models through one shared queue and loads the requested model at runtime. Changing models between jobs keeps the same service, port, and performance history. Hover over either generator's health dot to see its port, active model, current stage, and queued/running job counts, including when the queue is empty or paused. While a job runs, it also shows the job's progress and, when the generator can estimate it, about how long is left and when it should finish (for example "62% · about 1 min left (done ~3:42 PM)"). Voice percentages start with "~" because they are estimated from how long recent takes took, and a take that runs past its estimate says "taking longer than usual". Generators started before progress reporting was added show no progress line. An idle generator with no model loaded is healthy.
 
 Right-click the menu bar icon to refresh, open logs, or quit. Quitting Daemon Monitor leaves your services running. Hold Command and drag the icon to move it along the menu bar.
 
