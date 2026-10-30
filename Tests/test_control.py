@@ -440,4 +440,164 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(received, ['Bearer ' + token])
 
 
+    def fake_service(self, health, paused=False):
+        """A local HTTP fixture recording control requests; it shares one pause flag like the real queue database."""
+        service = {'health': health, 'paused': paused, 'requests': []}
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(data)
+            def do_GET(self):
+                if self.path == '/health': self.reply(service['health']())
+                elif self.path == '/v1/queue': self.reply({'queued': 0, 'running': 0, 'paused': service['paused']})
+                else: self.send_error(404)
+            def control(self):
+                length = int(self.headers.get('Content-Length') or 0)
+                body = json.loads(self.rfile.read(length) or b'null')
+                service['requests'].append((self.command, self.path, body))
+                if self.command == 'PATCH' and self.path == '/v1/queue': service['paused'] = body['paused']
+                elif self.command == 'POST' and self.path in ('/api/queue/pause', '/api/queue/resume'): service['paused'] = self.path.endswith('pause')
+                else: return self.send_error(404)
+                self.reply({'paused': service['paused']})
+            do_PATCH = do_POST = control
+            def log_message(self, *_): pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        service['port'] = server.server_port
+        return service
+
+    def queue_health(self, family):
+        root = str(control.path(self.controller.item(family + '-queue')['root']).resolve())
+        if family == 'image':
+            return {'status': 'ready', 'service': 'imagegen-queue', 'project_dir': root, 'version': '4.0.0', 'queue_scope': 'shared'}
+        return {'status': 'ready', 'service': 'voicegen-queue', 'role': 'queue-crud', 'project': root,
+                'api_version': '4.0.0', 'queue_scope': 'shared'}
+
+    def test_snapshot_reports_each_projects_shared_pause_flag(self):
+        image = self.fake_service(lambda: self.runtime_state('image', queue={'stage': 'idle', 'paused': True}))
+        voice = self.fake_service(lambda: self.runtime_state('voice', queue_paused=False))
+        image_queue = self.fake_service(lambda: self.queue_health('image'))
+        voice_queue = self.fake_service(lambda: {**self.queue_health('voice'), 'paused': True})
+        bridge = self.fake_service(lambda: {})  # Keep the snapshot away from a real local bridge.
+        self.controller.item('bridge')['root'] = self.temp.name
+        for identifier, service in (('bridge', bridge), ('image', image), ('voice', voice), ('image-queue', image_queue), ('voice-queue', voice_queue)):
+            self.controller.item(identifier)['port'] = service['port']
+        with patch.object(self.controller, 'processes', return_value=[]), patch.object(self.controller, 'owned_processes', return_value=[]):
+            rows = {row['id']: row for row in self.controller.snapshot()['services']}
+        self.assertIs(rows['image']['queue_paused'], True)
+        self.assertIs(rows['voice']['queue_paused'], False)  # The generator wins over the queue's reading.
+        self.assertNotIn('queue_paused', rows['image-queue'])
+        self.assertNotIn('queue_paused', rows['bridge'])
+        self.assertEqual(image['requests'] + voice['requests'] + image_queue['requests'] + voice_queue['requests'], [])
+
+    def test_pause_flag_falls_back_to_the_queue_and_is_unknown_without_either(self):
+        image_queue = self.fake_service(lambda: self.queue_health('image'), paused=True)
+        voice_queue = self.fake_service(lambda: {**self.queue_health('voice'), 'paused': False})
+        for family, queue in (('image', image_queue), ('voice', voice_queue)):
+            item, status = self.controller.desired(family + '-queue'), None
+            item['port'] = queue['port']
+            with patch.object(self.controller, 'owned_processes', return_value=[]):
+                status = self.controller.inspect(item)
+            self.assertIs(self.controller.queue_paused(family, None, item, status), family == 'image')
+            # A VoiceGen storage failure makes its generator flag unreliable, so the queue's reading is used.
+            failed = self.runtime_state('voice', queue_paused=False, queue_storage={'status': 'unavailable'})
+            self.assertIs(self.controller.queue_paused(family, failed if family == 'voice' else None, item, status), family == 'image')
+        stopped = {'state': None}
+        self.assertIsNone(self.controller.queue_paused('image', None, self.controller.desired('image-queue'), stopped))
+        storage_down = self.runtime_state('voice', queue_paused=False, queue_storage={'status': 'unavailable'})
+        self.assertIsNone(self.controller.queue_paused('voice', storage_down, self.controller.desired('voice-queue'), stopped))
+
+    def test_pause_and_resume_use_each_projects_existing_api(self):
+        image = self.fake_service(lambda: self.runtime_state('image', queue={'stage': 'idle', 'paused': image['paused']}))
+        voice = self.fake_service(lambda: self.runtime_state('voice', queue_paused=voice['paused']))
+        self.controller.item('image')['port'] = image['port']; self.controller.item('voice')['port'] = voice['port']
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            self.assertEqual(self.controller.set_paused('image', True), {'ok': True, 'paused': True})
+            self.assertEqual(self.controller.set_paused('image', False), {'ok': True, 'paused': False})
+            self.assertEqual(self.controller.set_paused('voice', True), {'ok': True, 'paused': True})
+            self.assertEqual(self.controller.set_paused('voice', False), {'ok': True, 'paused': False})
+        self.assertEqual(image['requests'], [('PATCH', '/v1/queue', {'paused': True}), ('PATCH', '/v1/queue', {'paused': False})])
+        self.assertEqual(voice['requests'], [('POST', '/api/queue/pause', {}), ('POST', '/api/queue/resume', {})])
+
+    def test_pause_uses_the_queue_when_the_generator_is_off_and_never_an_unrelated_listener(self):
+        stranger = self.fake_service(lambda: {'status': 'ready', 'service': 'something-else'})
+        voice_queue = self.fake_service(lambda: {**self.queue_health('voice'), 'paused': voice_queue['paused']})
+        self.controller.item('voice')['port'] = stranger['port']; self.controller.item('voice-queue')['port'] = voice_queue['port']
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            self.assertEqual(self.controller.set_paused('voice', True), {'ok': True, 'paused': True})
+        self.assertEqual(stranger['requests'], [])
+        self.assertEqual(voice_queue['requests'], [('POST', '/api/queue/pause', {})])
+        self.controller.item('voice-queue')['port'] = stranger['port']
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            with self.assertRaisesRegex(ValueError, 'Start the generator or its queue'):
+                self.controller.set_paused('voice', False)
+        self.assertEqual(stranger['requests'], [])
+        with self.assertRaisesRegex(ValueError, 'Only Image and Voice'):
+            self.controller.set_paused('bridge', True)
+
+    def test_pause_reports_an_unconfirmed_change(self):
+        reply = lambda item, endpoint='/health', method='GET', body=None: (
+            self.runtime_state('image') if endpoint == '/health' else {'paused': False})
+        with patch.object(self.controller, 'owned_processes', return_value=[]), patch.object(self.controller, 'request', side_effect=reply):
+            with self.assertRaisesRegex(ValueError, 'did not confirm'):
+                self.controller.set_paused('image', True)
+
+    def done_at(self, now, seconds):
+        return '(done ~' + control.time.strftime('%-I:%M %p', control.time.localtime(now + seconds)) + ')'
+
+    def test_progress_text_for_image_and_voice(self):
+        now = 1_800_000_000
+        describe = control.Controller.describe_progress
+        image = {'percent': 62, 'phase': 'sampling', 'image': 2, 'total_images': 3, 'step': 5, 'total_steps': 8,
+                 'estimated_remaining_seconds': 75, 'updated': now - 15}
+        self.assertEqual(describe('image', image, now), '62% · image 2 of 3 · about 1 min left ' + self.done_at(now, 60))
+        self.assertEqual(describe('image', {'percent': 0, 'phase': 'loading_model', 'image': None, 'total_images': 1,
+            'estimated_remaining_seconds': None, 'updated': now}, now), '0% · loading model')
+        self.assertEqual(describe('image', {'percent': 97, 'phase': 'finishing', 'total_images': 1,
+            'estimated_remaining_seconds': 3, 'updated': now}, now), '97% · finishing · a few seconds left')
+        self.assertEqual(describe('voice', {'percent': 40, 'phase': 'generating', 'estimated': True, 'eta_seconds': 32,
+            'overdue': False, 'basis': 'history'}, now), '~40% · about 30 sec left ' + self.done_at(now, 32))
+        self.assertEqual(describe('voice', {'percent': 95, 'phase': 'generating', 'eta_seconds': None, 'overdue': True}, now),
+                         '~95% · taking longer than usual')
+        self.assertEqual(describe('voice', {'percent': 0, 'phase': 'preparing', 'eta_seconds': None, 'overdue': False}, now), '~0% · preparing')
+        self.assertEqual(describe('voice', {'percent': 10, 'phase': 'generating', 'eta_seconds': 7170}, now),
+                         '~10% · about 2 h 0 min left ' + self.done_at(now, 7170))
+        for missing in (None, {}, {'percent': None}, {'percent': True}, 'soon'):
+            self.assertIsNone(describe('image', missing, now)); self.assertIsNone(describe('voice', missing, now))
+
+    def test_tooltip_shows_running_job_progress_and_tolerates_older_servers(self):
+        image = self.controller.desired('image')
+        progress = {'percent': 62, 'phase': 'sampling', 'image': 1, 'total_images': 1, 'estimated_remaining_seconds': None, 'updated': None}
+        busy = self.runtime_state('image', busy=True, active_model='qwen-image-2.1-turbo', progress=progress,
+                                  queue={'stage': 'rendering', 'running': 1, 'waiting': 0})
+        with patch.object(self.controller, 'request', return_value=busy), patch.object(self.controller, 'owned_processes', return_value=[123]):
+            self.assertIn('\nProgress: 62%', self.controller.inspect(image)['detail'])
+        busy.pop('progress')  # An image generator started before progress reporting.
+        with patch.object(self.controller, 'request', return_value=busy), patch.object(self.controller, 'owned_processes', return_value=[123]):
+            self.assertNotIn('Progress:', self.controller.inspect(image)['detail'])
+
+        voice = self.controller.desired('voice')
+        job = 'f' * 32
+        state = self.runtime_state('voice', status='Generating', busy=True, active_job=job, queue_counts={'running': 1})
+        state.pop('queue')
+        replies = {'/health': state, '/api/jobs/' + job: {'id': job, 'status': 'running',
+                   'progress': {'percent': 40, 'phase': 'generating', 'eta_seconds': None, 'overdue': True}}}
+        requested = []
+        def reply(item, endpoint='/health', method='GET', body=None):
+            requested.append((method, endpoint)); return replies[endpoint]
+        with patch.object(self.controller, 'request', side_effect=reply), patch.object(self.controller, 'owned_processes', return_value=[123]):
+            self.assertIn('\nProgress: ~40% · taking longer than usual', self.controller.inspect(voice)['detail'])
+        self.assertEqual(requested, [('GET', '/health'), ('GET', '/api/jobs/' + job)])
+        replies['/api/jobs/' + job] = {'id': job, 'status': 'running'}  # A voice generator without estimates.
+        with patch.object(self.controller, 'request', side_effect=reply), patch.object(self.controller, 'owned_processes', return_value=[123]):
+            self.assertNotIn('Progress:', self.controller.inspect(voice)['detail'])
+        # An idle generator or an unexpected job ID never triggers the extra lookup.
+        for update in ({'busy': False, 'status': 'ready', 'active_job': None, 'queue_counts': {}}, {'active_job': '../health'}):
+            requested.clear(); replies['/health'] = {**state, **update}
+            with patch.object(self.controller, 'request', side_effect=reply), patch.object(self.controller, 'owned_processes', return_value=[123]):
+                self.assertNotIn('Progress:', self.controller.inspect(voice)['detail'])
+            self.assertEqual(requested, [('GET', '/health')])
+
+
 if __name__ == '__main__': unittest.main()

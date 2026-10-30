@@ -57,6 +57,10 @@ Version values must be numeric dotted strings, such as `4.0.0`, and the project 
 
 `active_model` is nullable and describes the selected/loaded backend. It is read-only information in generator tooltips and startup settings, and is never used to identify a process. Global queue counts, stage, and a blocked reason appear in the tooltip when supplied.
 
+The **Processing** switch reads the shared, persisted pause flag: ImageGen's `queue.paused` or VoiceGen's `queue_paused` from the generator's `/health`. When the generator is off, it reads the queue instead: ImageGen's `GET /v1/queue` `paused`, or VoiceGen's queue `/health` `paused`. A VoiceGen generator reporting unavailable queue storage does not count as a reading. With neither source available, the switch is disabled. Changing it calls the project's existing API on the generator, or on the queue if the generator is off: ImageGen `PATCH /v1/queue {"paused": true|false}`, VoiceGen `POST /api/queue/pause` or `/api/queue/resume`. It only acts after the same health identity check used for start/stop, and reports an error if the service does not confirm the new state. Pausing never cancels or interrupts work: the active job finishes, and `generate_immediately` or Run Now jobs still run while paused.
+
+While a generator is busy, its tooltip adds a **Progress** line. ImageGen supplies the running job's `progress` in `/health`: the line shows `percent`, "image N of M" for batches, the phase name outside sampling, and `estimated_remaining_seconds` reduced by the time since `updated`. VoiceGen's `/health` names the `active_job`, so the monitor reads that job with one `GET /api/jobs/{id}` (only for a 32-character hex ID). The line shows its estimated `percent` with a `~`, `preparing`/`waiting` phases, `eta_seconds`, or "taking longer than usual" when `overdue` is true. Remaining time reads "about N sec/min left", followed by the local finish time ("done ~3:42 PM"). When the estimate is null, both are left out. A missing or malformed `progress` (an older server) omits the line, and a failed job lookup never affects health.
+
 Image's tooltip reads the stage and counts from `queue`; Voice's reads its stage from `status` and counts from `queue_counts`. An empty Voice count map means zero queued/running jobs when queue storage is healthy. A queue-storage failure keeps its error visible without inventing zero counts. Both tooltips indicate a paused queue when reported.
 
 Busy generators refuse stop requests, including model loading, switching, expansion and preview work. The monitor rechecks health before stopping and refuses to terminate a runtime generator whose idle state cannot be confirmed. Idle generators and queues receive SIGTERM only after checks of the Python command, project working directory, port, and process identity. Processes from other checkouts or test ports are ignored; termination is never forced.
@@ -134,7 +138,7 @@ python3 Resources/control.py sample
 python3 Resources/control.py history image --range 30m
 ```
 
-The helper also accepts `start SERVICE`, `stop SERVICE`, and `save` with a JSON patch on standard input. Service IDs are `bridge`, `image`, `image-queue`, `voice`, and `voice-queue`. These commands control the configured services.
+The helper also accepts `start SERVICE`, `stop SERVICE`, `pause image|voice`, `resume image|voice`, and `save` with a JSON patch on standard input. `status` includes `queue_paused` (true, false or null) on the `image` and `voice` rows. Service IDs are `bridge`, `image`, `image-queue`, `voice`, and `voice-queue`. These commands control the configured services.
 
 Use `--support /absolute/folder` to isolate configuration and process records for tests.
 
@@ -145,9 +149,9 @@ python3 -m unittest discover -s Tests -v
 zsh Tests/run_monitor_tests.sh
 ```
 
-The unit suite uses mocks and temporary local HTTP fixtures. It covers startup arguments, configuration validation, retention of running endpoints, literal environment values, authenticated health checks, independent queue controls, stale PIDs, development ports, busy generators, and refusal to replace unrelated listeners.
+The unit suite uses mocks and temporary local HTTP fixtures. It covers startup arguments, configuration validation, retention of running endpoints, literal environment values, authenticated health checks, independent queue controls, pause/resume through each project's API with queue fallback, stale PIDs, development ports, busy generators, and refusal to replace or control unrelated listeners.
 
-The native monitor checks simulate delayed helper replies to verify that switches keep their requested position through on/off actions and overlapping polls. They also cover status recovery without hiding action errors, browser links using actual running ports, and tooltip layout, including five-digit queue ports and wrapped failure reasons, without operating real services. Process-query fixtures verify one bounded retry, a readable error after repeated timeouts, and preservation of metrics history when discovery fails.
+The native monitor checks simulate delayed helper replies to verify that switches, including Processing, keep their requested position through on/off actions and overlapping polls. They also cover status recovery without hiding action errors, browser links using actual running ports, and tooltip layout, including five-digit queue ports and wrapped failure reasons, without operating real services. Process-query fixtures verify one bounded retry, a readable error after repeated timeouts, and preservation of metrics history when discovery fails.
 
 Metrics fixtures cover process trees, queue boundaries, executable paths containing spaces, CPU/GPU deltas, PID reuse, sleep and counter resets, unknown readings, stopped processes, range aggregation, retention, and private storage. Native checks also exercise stale history responses, sampling throttling, and chart sample selection across missing measurements, run boundaries, and long gaps.
 

@@ -81,6 +81,43 @@ enum MonitorTests {
         precondition(monitor.statusError != nil)
     }
 
+    static func pausedSnapshot(_ paused: Bool?) -> Result<Data, Error> {
+        let value = paused.map { String($0) } ?? "null"
+        return .success(Data("""
+        {"services":[{"id":"image","name":"Image gen service","running":true,"healthy":true,"detail":"status","port":5742,"queue_paused":\(value)}]}
+        """.utf8))
+    }
+
+    static func processingToggle() {
+        let fake = FakeHelper()
+        let monitor = Monitor(helper: fake.call)
+        var image = status(true)
+        image.queue_paused = false
+        monitor.statuses = [image]
+        monitor.refresh()
+        monitor.setProcessing(image, on: false)
+        precondition(monitor.queuePaused("image") == true, "The switch moves to Paused while the request runs")
+        precondition(!monitor.isBusy("image"), "Pausing does not lock the service and queue switches")
+        monitor.setProcessing(image, on: true)
+        precondition(fake.requests.filter { $0.arguments.first == "resume" }.isEmpty, "Ignore a second change until the first is reconciled")
+        fake.reply(["pause", "image"], success)
+        fake.reply(["status"], pausedSnapshot(false))
+        precondition(monitor.queuePaused("image") == true, "An older poll must not undo the requested pause")
+        fake.reply(["status"], pausedSnapshot(true))
+        precondition(monitor.pausing.isEmpty && monitor.queuePaused("image") == true)
+
+        monitor.setProcessing(monitor.statuses[0], on: true)
+        fake.reply(["resume", "image"], failure)
+        fake.reply(["status"], pausedSnapshot(true))
+        precondition(monitor.queuePaused("image") == true, "A failed resume shows the actual paused state")
+        precondition(monitor.error == "The generator is busy.")
+
+        monitor.refresh()
+        fake.reply(["status"], pausedSnapshot(nil))
+        monitor.setProcessing(monitor.statuses[0], on: true)
+        precondition(fake.requests.isEmpty, "An unknown pause state cannot be changed")
+    }
+
     static func history(_ id: String, _ range: String) -> Result<Data, Error> {
         .success(Data("""
         {"id":"\(id)","range":"\(range)","start":0,"end":300,"resolution":15,"recording_since":null,
@@ -272,7 +309,7 @@ enum MonitorTests {
         precondition(preferences.string(forKey: "UnrelatedSetting") == "preserve me")
 
         let monitor = Monitor(helper: FakeHelper().call)
-        precondition(monitor.contentSize == NSSize(width: 320, height: 160))
+        precondition(monitor.contentSize == NSSize(width: 388, height: 160))
         monitor.selectedID = "image"
         precondition(monitor.contentSize == NSSize(width: 360, height: 274))
         monitor.settingsExpanded = true
@@ -313,6 +350,7 @@ enum MonitorTests {
         }
         failedStop()
         failedRefresh()
+        processingToggle()
         staleHistory()
         performanceSampling()
         tooltipPorts()
@@ -325,6 +363,6 @@ enum MonitorTests {
         menuBarAttachmentRecovery()
         controlWindowRecovery()
         popoverPresentationRouting()
-        print("Passed 18 monitor checks: toggles, polling races, failure recovery, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, recovery, and popover routing.")
+        print("Passed 19 monitor checks: toggles, polling races, failure recovery, queue pause, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, recovery, and popover routing.")
     }
 }

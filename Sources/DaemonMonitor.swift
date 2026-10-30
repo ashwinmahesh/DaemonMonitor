@@ -11,6 +11,8 @@ struct ServiceStatus: Decodable, Identifiable {
     var runtime_model_switching: Bool? = nil
     var active_model: String? = nil
     var busy: Bool? = nil
+    // Shared persisted pause flag for a generator family; nil while neither its generator nor queue reports it.
+    var queue_paused: Bool? = nil
 
     var activeModelSummary: String? {
         guard runtime_model_switching == true else { return nil }
@@ -80,6 +82,8 @@ final class Monitor: ObservableObject {
     @Published var statuses: [ServiceStatus] = []
     @Published var settings: [ServiceSettings] = []
     @Published var pending: [String: Bool] = [:]
+    // Requested pause state per generator while a pause/resume request and its follow-up snapshot are in flight.
+    @Published var pausing: [String: Bool] = [:]
     @Published var selectedID: String? {
         didSet {
             if selectedID != nil { performanceID = nil }
@@ -118,6 +122,17 @@ final class Monitor: ObservableObject {
     func family(_ id: String) -> String { String(id.split(separator: "-")[0]) }
     func isBusy(_ id: String) -> Bool { pending.keys.contains { family($0) == family(id) } }
     func isOn(_ id: String) -> Bool { pending[id] ?? statuses.first(where: { $0.id == id })?.running ?? false }
+    func queuePaused(_ id: String) -> Bool? { pausing[id] ?? statuses.first(where: { $0.id == id })?.queue_paused }
+    func setProcessing(_ status: ServiceStatus, on: Bool) {
+        guard pausing[status.id] == nil, queuePaused(status.id) != nil else { return }
+        error = nil
+        pausing[status.id] = !on
+        helper([on ? "resume" : "pause", status.id], nil) { result in
+            if case .failure(let error) = result { self.error = error.localizedDescription }
+            // As with start/stop, hold the requested position until a newer snapshot arrives.
+            self.refresh { self.pausing.removeValue(forKey: status.id) }
+        }
+    }
     func serviceUIURL(_ id: String) -> URL? {
         guard ["image", "voice"].contains(id), let status = statuses.first(where: { $0.id == id }), status.running else { return nil }
         return URL(string: "http://127.0.0.1:\(status.port)/")
@@ -374,6 +389,30 @@ struct ServiceSwitch: View {
     }
 }
 
+struct ProcessingSwitch: View {
+    @ObservedObject var monitor: Monitor
+    let title: String
+    let service: ServiceStatus
+
+    private var helpText: String {
+        switch monitor.queuePaused(service.id) {
+        case false?: return "Processing: waiting jobs run in order. Switch off to pause after the active job finishes. Generate immediately and Run Now jobs still run while paused."
+        case true?: return "Paused: waiting jobs stay saved and the active job finishes. Generate immediately and Run Now jobs still run. Switch on to resume."
+        case nil: return "Start the generator or its queue to see or change processing."
+        }
+    }
+    var body: some View {
+        Toggle("Process \(title) queue", isOn: Binding(
+            get: { monitor.queuePaused(service.id) == false },
+            set: { monitor.setProcessing(service, on: $0) }
+        ))
+        .labelsHidden().toggleStyle(.switch).controlSize(.mini).fixedSize()
+        .disabled(monitor.pausing[service.id] != nil || monitor.queuePaused(service.id) == nil)
+        .accessibilityLabel("Process \(title) queue")
+        .help(helpText)
+    }
+}
+
 struct RowSettings: View {
     @ObservedObject var monitor: Monitor
     let title: String
@@ -460,7 +499,15 @@ struct ServiceFamilyRow: View {
                         .accessibilityHidden(true)
                 }
             }.frame(width: 58)
-            if monitor.pending[service.id] != nil || (queue.map { monitor.pending[$0.id] != nil } ?? false) {
+            Group {
+                if queue != nil {
+                    ProcessingSwitch(monitor: monitor, title: title, service: service)
+                } else {
+                    Text("—").font(.system(size: 11)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+            }.frame(width: 60)
+            if monitor.pending[service.id] != nil || monitor.pausing[service.id] != nil || (queue.map { monitor.pending[$0.id] != nil } ?? false) {
                 ProgressView().controlSize(.mini).frame(width: 20, height: 24)
             } else {
                 RowSettings(monitor: monitor, title: title, serviceID: service.id, queueID: queue?.id)
@@ -628,6 +675,7 @@ struct PopoverView: View {
                                 Spacer(minLength: 0)
                                 Text("Service").frame(width: 44)
                                 Text("Queue").frame(width: 58)
+                                Text("Processing").frame(width: 60)
                                 Color.clear.frame(width: 20, height: 1)
                             }.font(.system(size: 10)).foregroundStyle(.secondary).frame(height: 12)
                             VStack(spacing: 0) {
@@ -663,7 +711,7 @@ extension Monitor {
             let modelInfo: CGFloat = statuses.first(where: { $0.id == id })?.activeModelSummary == nil ? 0 : 32
             return NSSize(width: 360, height: base + extra + modelInfo + (error == nil ? 0 : 76))
         }
-        return NSSize(width: 320, height: notice == nil ? 160 : 244)
+        return NSSize(width: 388, height: notice == nil ? 160 : 244)
     }
 }
 
