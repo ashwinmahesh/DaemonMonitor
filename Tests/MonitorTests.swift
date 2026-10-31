@@ -118,6 +118,39 @@ enum MonitorTests {
         precondition(fake.requests.isEmpty, "An unknown pause state cannot be changed")
     }
 
+    static func weightsSnapshot(_ value: Bool?, note: String? = nil) -> Result<Data, Error> {
+        let keep = value.map { String($0) } ?? "null", reason = note.map { "\"\($0)\"" } ?? "null"
+        return .success(Data("""
+        {"services":[{"id":"image","name":"Image gen service","running":true,"healthy":true,"detail":"status","port":5742,"queue_paused":false,"keep_weights_loaded":\(keep),"settings_note":\(reason)}]}
+        """.utf8))
+    }
+
+    static func keepWeightsToggle() {
+        let fake = FakeHelper()
+        let monitor = Monitor(helper: fake.call)
+        monitor.refresh()
+        fake.reply(["status"], weightsSnapshot(false))
+        monitor.setKeepWeights(on: true)
+        precondition(monitor.keepWeightsLoaded() == true, "The switch moves while the request runs")
+        monitor.setKeepWeights(on: false)
+        precondition(fake.requests.map(\.arguments) == [["keep-weights", "image", "--value", "on"]], "Ignore a second change until the first is reconciled")
+        fake.reply(["keep-weights", "image", "--value", "on"], success)
+        fake.reply(["status"], weightsSnapshot(true))
+        precondition(monitor.keepWeightsPending == nil && monitor.keepWeightsLoaded() == true)
+
+        monitor.setKeepWeights(on: false)
+        fake.reply(["keep-weights", "image", "--value", "off"], failure)
+        fake.reply(["status"], weightsSnapshot(true))
+        precondition(monitor.keepWeightsLoaded() == true, "A failed change shows the actual setting")
+        precondition(monitor.error == "The generator is busy.")
+
+        monitor.refresh()
+        fake.reply(["status"], weightsSnapshot(nil, note: "Update and restart ImageGen to use this setting."))
+        monitor.setKeepWeights(on: true)
+        precondition(fake.requests.isEmpty, "An older ImageGen without the setting cannot be changed")
+        precondition(monitor.statuses[0].settings_note == "Update and restart ImageGen to use this setting.")
+    }
+
     static func history(_ id: String, _ range: String) -> Result<Data, Error> {
         .success(Data("""
         {"id":"\(id)","range":"\(range)","start":0,"end":300,"resolution":15,"recording_since":null,
@@ -309,7 +342,10 @@ enum MonitorTests {
         precondition(preferences.string(forKey: "UnrelatedSetting") == "preserve me")
 
         let monitor = Monitor(helper: FakeHelper().call)
-        precondition(monitor.contentSize == NSSize(width: 388, height: 160))
+        precondition(monitor.contentSize == NSSize(width: 320, height: 160))
+        monitor.openRuntimeSettings()
+        precondition(monitor.contentSize == NSSize(width: 360, height: 372))
+        monitor.runtimeSettingsOpen = false
         monitor.selectedID = "image"
         precondition(monitor.contentSize == NSSize(width: 360, height: 274))
         monitor.settingsExpanded = true
@@ -351,6 +387,7 @@ enum MonitorTests {
         failedStop()
         failedRefresh()
         processingToggle()
+        keepWeightsToggle()
         staleHistory()
         performanceSampling()
         tooltipPorts()
@@ -363,6 +400,6 @@ enum MonitorTests {
         menuBarAttachmentRecovery()
         controlWindowRecovery()
         popoverPresentationRouting()
-        print("Passed 19 monitor checks: toggles, polling races, failure recovery, queue pause, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, recovery, and popover routing.")
+        print("Passed 20 monitor checks: toggles, polling races, failure recovery, queue pause, keep weights loaded, history, sampling, tooltips, browser endpoints, runtime models, startup settings, chart inspection, menu bar attachment, recovery, and popover routing.")
     }
 }
