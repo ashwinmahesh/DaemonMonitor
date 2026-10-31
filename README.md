@@ -10,7 +10,10 @@ Click the activity icon in the menu bar to open Daemon Monitor. Click outside th
 
 - **AI Bridge** has one on/off switch.
 - **Image Generator** and **Voice Generator** each have separate **Service** and **Queue** switches.
-- Their **Processing** switch shows whether the generator's job queue is running or paused. Switch it off to pause: the active job finishes, then waiting jobs stay saved until you switch it back on. Jobs sent with **Generate immediately** or **Run Now** still run while paused. It needs the generator or its queue running, and it is the same setting as the pause controls in each generator's own UI.
+- Click the **sliders button** in the header to open **Settings**. It holds the live switches for each generator:
+  - **Process queue** (Image and Voice): switch it off to pause the job queue. The active job finishes, then waiting jobs stay saved until you switch it back on. Jobs sent with **Generate immediately** or **Run Now** still run while paused. It's the same setting as the Process queue switch in each generator's own UI.
+  - **Keep image weights loaded** (Image): keeps Qwen-Image and FLUX.2 Klein loaded while the next image uses the same model (about 30 seconds saved per Qwen image). It holds about 9.4 GB while loaded and applies from the next image.
+  - Each switch needs its generator or queue running. An older ImageGen without Keep image weights loaded shows that switch as unavailable until you update and restart it.
 - Click the **square-arrow button** beside a generator’s name to open its UI in your default browser. It becomes available when the service is running and uses its current port.
 - Hover over a **green dot** to see its running port. A **red dot** means stopped, starting, or unhealthy; hover over it to see the reason.
 - The header shows how many of the five services are online. Click the refresh button for an immediate check.

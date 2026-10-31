@@ -440,9 +440,10 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(received, ['Bearer ' + token])
 
 
-    def fake_service(self, health, paused=False):
-        """A local HTTP fixture recording control requests; it shares one pause flag like the real queue database."""
-        service = {'health': health, 'paused': paused, 'requests': []}
+    def fake_service(self, health, paused=False, settings=None):
+        """A local HTTP fixture recording control requests; it shares one pause flag like the real queue database.
+        settings is a dict shared between fixtures (like the queue database), or None for an older server (404)."""
+        service = {'health': health, 'paused': paused, 'requests': [], 'settings': settings}
         class Handler(BaseHTTPRequestHandler):
             def reply(self, value):
                 data = json.dumps(value).encode()
@@ -450,6 +451,7 @@ class ControllerTests(unittest.TestCase):
             def do_GET(self):
                 if self.path == '/health': self.reply(service['health']())
                 elif self.path == '/v1/queue': self.reply({'queued': 0, 'running': 0, 'paused': service['paused']})
+                elif self.path == '/v1/settings' and service['settings'] is not None: self.reply(service['settings'])
                 else: self.send_error(404)
             def control(self):
                 length = int(self.headers.get('Content-Length') or 0)
@@ -457,6 +459,8 @@ class ControllerTests(unittest.TestCase):
                 service['requests'].append((self.command, self.path, body))
                 if self.command == 'PATCH' and self.path == '/v1/queue': service['paused'] = body['paused']
                 elif self.command == 'POST' and self.path in ('/api/queue/pause', '/api/queue/resume'): service['paused'] = self.path.endswith('pause')
+                elif self.command == 'PATCH' and self.path == '/v1/settings' and service['settings'] is not None:
+                    service['settings'].update(body); return self.reply(service['settings'])
                 else: return self.send_error(404)
                 self.reply({'paused': service['paused']})
             do_PATCH = do_POST = control
@@ -598,6 +602,93 @@ class ControllerTests(unittest.TestCase):
             with patch.object(self.controller, 'request', side_effect=reply), patch.object(self.controller, 'owned_processes', return_value=[123]):
                 self.assertNotIn('Progress:', self.controller.inspect(voice)['detail'])
             self.assertEqual(requested, [('GET', '/health')])
+
+    def image_services(self, generator_settings, queue_settings, generator=True, queue=True):
+        services = {}
+        if generator:
+            services['image'] = self.fake_service(lambda: self.runtime_state('image'), settings=generator_settings)
+        if queue:
+            services['image-queue'] = self.fake_service(lambda: self.queue_health('image'), settings=queue_settings)
+        for identifier in ('image', 'image-queue'):
+            # A closed fixture port stands in for a stopped service.
+            self.controller.item(identifier)['port'] = services[identifier]['port'] if identifier in services else self.closed_port()
+        return services
+
+    def closed_port(self):
+        import socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0)); return probe.getsockname()[1]
+
+    def keep_weights(self):
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            return self.controller.keep_weights(self.controller.resolve('image'), self.controller.resolve('image-queue'))
+
+    def test_keep_weights_reads_the_shared_setting_with_queue_fallback(self):
+        shared = {'keep_weights_loaded': True}
+        services = self.image_services(shared, shared)
+        self.assertEqual(self.keep_weights(), (True, None))
+        self.assertEqual(services['image-queue']['requests'], [])
+        # An older generator (404) with an updated queue still shows the shared value.
+        self.image_services(None, shared)
+        self.assertEqual(self.keep_weights(), (True, None))
+        self.image_services(None, {'keep_weights_loaded': False}, generator=False)
+        self.assertEqual(self.keep_weights(), (False, None))
+        self.image_services(None, None)
+        self.assertEqual(self.keep_weights(), (None, 'Update and restart ImageGen to use this setting.'))
+        self.image_services(None, None, generator=False, queue=False)
+        self.assertEqual(self.keep_weights(), (None, 'Start the Image Generator or its queue to change this.'))
+
+    def test_snapshot_includes_keep_weights_only_on_the_image_row(self):
+        shared = {'keep_weights_loaded': False}
+        self.image_services(shared, shared)
+        for identifier in ('bridge', 'voice', 'voice-queue'):
+            self.controller.item(identifier)['port'] = self.closed_port()
+        self.controller.item('bridge')['root'] = self.temp.name
+        with patch.object(self.controller, 'processes', return_value=[]), patch.object(self.controller, 'owned_processes', return_value=[]):
+            rows = {row['id']: row for row in self.controller.snapshot()['services']}
+        self.assertIs(rows['image']['keep_weights_loaded'], False)
+        self.assertIsNone(rows['image']['settings_note'])
+        for identifier in ('bridge', 'image-queue', 'voice', 'voice-queue'):
+            self.assertNotIn('keep_weights_loaded', rows[identifier])
+
+    def test_set_keep_weights_uses_the_settings_api_and_falls_back_to_the_queue(self):
+        shared = {'keep_weights_loaded': False}
+        services = self.image_services(shared, shared)
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            self.assertEqual(self.controller.set_keep_weights(True), {'ok': True, 'keep_weights_loaded': True})
+        self.assertEqual(services['image']['requests'], [('PATCH', '/v1/settings', {'keep_weights_loaded': True})])
+        self.assertEqual(services['image-queue']['requests'], [])
+        services = self.image_services(None, shared)  # Older generator, updated queue.
+        with patch.object(self.controller, 'owned_processes', return_value=[]):
+            self.assertEqual(self.controller.set_keep_weights(False), {'ok': True, 'keep_weights_loaded': False})
+        self.assertEqual(services['image-queue']['requests'], [('PATCH', '/v1/settings', {'keep_weights_loaded': False})])
+        self.assertIs(shared['keep_weights_loaded'], False)
+        self.image_services(None, None)
+        with patch.object(self.controller, 'owned_processes', return_value=[]), self.assertRaisesRegex(ValueError, 'Update ImageGen and restart it'):
+            self.controller.set_keep_weights(True)
+        self.image_services(None, None, generator=False, queue=False)
+        with patch.object(self.controller, 'owned_processes', return_value=[]), self.assertRaisesRegex(ValueError, 'Start the Image Generator'):
+            self.controller.set_keep_weights(True)
+
+    def test_set_keep_weights_never_contacts_an_unrelated_listener_and_requires_confirmation(self):
+        stranger = self.fake_service(lambda: {'status': 'ready', 'service': 'something-else'}, settings={'keep_weights_loaded': False})
+        self.controller.item('image')['port'] = stranger['port']; self.controller.item('image-queue')['port'] = stranger['port']
+        with patch.object(self.controller, 'owned_processes', return_value=[]), self.assertRaisesRegex(ValueError, 'Start the Image Generator'):
+            self.controller.set_keep_weights(True)
+        self.assertEqual(stranger['requests'], [])
+        reply = lambda item, endpoint='/health', method='GET', body=None: (
+            self.runtime_state('image') if endpoint == '/health' else {'keep_weights_loaded': False})
+        with patch.object(self.controller, 'owned_processes', return_value=[]), patch.object(self.controller, 'request', side_effect=reply):
+            with self.assertRaisesRegex(ValueError, 'did not confirm'):
+                self.controller.set_keep_weights(True)
+
+    def test_http_errors_keep_their_status(self):
+        service = self.fake_service(lambda: {}, settings=None)
+        item = self.controller.desired('image'); item['port'] = service['port']
+        with self.assertRaises(control.HTTPStatusError) as raised:
+            self.controller.request(item, '/v1/settings')
+        self.assertEqual(raised.exception.status, 404)
+        self.assertIsInstance(raised.exception, ValueError)  # Existing ValueError handling still applies.
 
 
 if __name__ == '__main__': unittest.main()
