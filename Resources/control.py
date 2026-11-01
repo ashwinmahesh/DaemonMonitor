@@ -100,6 +100,13 @@ def validate(config):
     return config
 
 
+class HTTPStatusError(ValueError):
+    """A non-200 control/health reply; keeps the status so callers can tell an older server (404) apart."""
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
 class Controller:
     def __init__(self, support=DEFAULT_SUPPORT):
         self.support = Path(support)
@@ -156,7 +163,7 @@ class Controller:
                     detail = value.get('detail') or value.get('error')
                     if isinstance(detail, str): message += ': ' + detail[:500]
                 except (ValueError, AttributeError): pass
-                raise ValueError(message)
+                raise HTTPStatusError(message, response.status)
             return json.loads(raw)
         finally: connection.close()
 
@@ -409,6 +416,8 @@ class Controller:
                    'runtime_model_switching', 'active_model', 'busy')}
             if identifier in GENERATOR_SERVICES:
                 row['queue_paused'] = self.queue_paused(identifier, status['state'], *resolved[identifier + '-queue'])
+            if identifier == 'image':
+                row['keep_weights_loaded'], row['settings_note'] = self.keep_weights(resolved['image'], resolved['image-queue'])
             services.append(row)
         return {'ok': True, 'services': services}
 
@@ -425,6 +434,39 @@ class Controller:
                 try: value = self.request(queue_item, '/v1/queue').get('paused')
                 except (OSError, ValueError, AttributeError, http.client.HTTPException): value = None
         return value if isinstance(value, bool) else None
+
+    def keep_weights(self, *sources):
+        """ImageGen's shared keep_weights_loaded setting, or None with a reason it can't be shown."""
+        running = [item for item, status in sources if status['state'] is not None]
+        if not running: return None, 'Start the Image Generator or its queue to change this.'
+        outdated = False
+        for item in running:
+            # Generator and queue share the value; an older process may not serve it yet.
+            try: value = self.request(item, '/v1/settings').get('keep_weights_loaded')
+            except HTTPStatusError as error:
+                outdated = outdated or error.status == 404
+                continue
+            except (OSError, ValueError, AttributeError, http.client.HTTPException): continue
+            if isinstance(value, bool): return value, None
+        return None, ('Update and restart ImageGen to use this setting.' if outdated
+                      else 'Could not read this setting. Refresh and try again.')
+
+    def set_keep_weights(self, value):
+        """Change ImageGen's keep_weights_loaded through its existing settings API; it applies from the next image."""
+        outdated = False
+        for identifier in ('image', 'image-queue'):
+            item, status = self.resolve(identifier)
+            if status['state'] is None: continue
+            try: result = self.request(item, '/v1/settings', 'PATCH', {'keep_weights_loaded': value})
+            except HTTPStatusError as error:
+                if error.status != 404: raise
+                outdated = True
+                continue
+            if not isinstance(result, dict) or result.get('keep_weights_loaded') is not value:
+                raise ValueError('ImageGen did not confirm the change. Refresh and try again.')
+            return {'ok': True, 'keep_weights_loaded': value}
+        if outdated: raise ValueError('This ImageGen version has no Keep image weights loaded setting. Update ImageGen and restart it.')
+        raise ValueError('Start the Image Generator or its queue to change this setting.')
 
     def set_paused(self, family, paused):
         """Pause or resume through each project's existing API; the active job always finishes."""
@@ -628,10 +670,11 @@ class Controller:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--support', type=Path, default=DEFAULT_SUPPORT)
-    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop', 'pause', 'resume', 'sample', 'history'))
+    parser.add_argument('action', choices=('status', 'config', 'save', 'start', 'stop', 'pause', 'resume', 'keep-weights', 'sample', 'history'))
     parser.add_argument('identifier', nargs='?', choices=IDS)
     parser.add_argument('--range', dest='range_name', choices=('5m', '30m', '1h', '6h', '24h', '3d', '7d'), default='5m')
     parser.add_argument('--interval', type=int, choices=(15, 60), default=60)
+    parser.add_argument('--value', choices=('on', 'off'))
     args = parser.parse_args()
     try:
         controller = Controller(args.support)
@@ -647,6 +690,9 @@ def main():
             else:
                 if args.identifier is None: raise ValueError('Choose a service for history.')
                 result = store.history(args.identifier, args.range_name)
+        elif args.action == 'keep-weights':
+            if args.identifier != 'image' or args.value is None: raise ValueError('Use keep-weights image --value on|off.')
+            result = controller.set_keep_weights(args.value == 'on')
         elif args.action in ('pause', 'resume'):
             if args.identifier not in GENERATOR_SERVICES: raise ValueError('Choose image or voice to pause or resume.')
             result = controller.set_paused(args.identifier, args.action == 'pause')

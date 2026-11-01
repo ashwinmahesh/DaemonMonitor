@@ -13,6 +13,9 @@ struct ServiceStatus: Decodable, Identifiable {
     var busy: Bool? = nil
     // Shared persisted pause flag for a generator family; nil while neither its generator nor queue reports it.
     var queue_paused: Bool? = nil
+    // ImageGen's shared Keep image weights loaded setting; nil with a note when it can't be read.
+    var keep_weights_loaded: Bool? = nil
+    var settings_note: String? = nil
 
     var activeModelSummary: String? {
         guard runtime_model_switching == true else { return nil }
@@ -92,6 +95,9 @@ final class Monitor: ObservableObject {
         }
     }
     @Published var settingsExpanded = false { didSet { layoutChanged?() } }
+    // The Settings view holds live service toggles: queue processing and Keep image weights loaded.
+    @Published var runtimeSettingsOpen = false { didSet { layoutChanged?() } }
+    @Published var keepWeightsPending: Bool?
     @Published var error: String? { didSet { layoutChanged?() } }
     @Published private(set) var statusError: String? { didSet { layoutChanged?() } }
     var notice: String? { error ?? statusError }
@@ -118,6 +124,7 @@ final class Monitor: ObservableObject {
     }
 
     func showPerformance(_ id: String) { selectedID = nil; performanceID = id }
+    func openRuntimeSettings() { error = nil; selectedID = nil; performanceID = nil; runtimeSettingsOpen = true }
 
     func family(_ id: String) -> String { String(id.split(separator: "-")[0]) }
     func isBusy(_ id: String) -> Bool { pending.keys.contains { family($0) == family(id) } }
@@ -131,6 +138,16 @@ final class Monitor: ObservableObject {
             if case .failure(let error) = result { self.error = error.localizedDescription }
             // As with start/stop, hold the requested position until a newer snapshot arrives.
             self.refresh { self.pausing.removeValue(forKey: status.id) }
+        }
+    }
+    func keepWeightsLoaded() -> Bool? { keepWeightsPending ?? statuses.first(where: { $0.id == "image" })?.keep_weights_loaded }
+    func setKeepWeights(on: Bool) {
+        guard keepWeightsPending == nil, keepWeightsLoaded() != nil else { return }
+        error = nil
+        keepWeightsPending = on
+        helper(["keep-weights", "image", "--value", on ? "on" : "off"], nil) { result in
+            if case .failure(let error) = result { self.error = error.localizedDescription }
+            self.refresh { self.keepWeightsPending = nil }
         }
     }
     func serviceUIURL(_ id: String) -> URL? {
@@ -413,6 +430,89 @@ struct ProcessingSwitch: View {
     }
 }
 
+struct KeepWeightsSwitch: View {
+    @ObservedObject var monitor: Monitor
+    var body: some View {
+        Toggle("Keep image weights loaded", isOn: Binding(
+            get: { monitor.keepWeightsLoaded() == true },
+            set: { monitor.setKeepWeights(on: $0) }
+        ))
+        .labelsHidden().toggleStyle(.switch).controlSize(.mini).fixedSize()
+        .disabled(monitor.keepWeightsPending != nil || monitor.keepWeightsLoaded() == nil)
+        .accessibilityLabel("Keep image weights loaded")
+    }
+}
+
+struct RuntimeSettingsView: View {
+    @ObservedObject var monitor: Monitor
+    static let keepWeightsHelp = "Keeps Qwen-Image and FLUX.2 Klein loaded while the next image uses the same model (about 30 s saved per Qwen image); holds about 9.4 GB while loaded."
+
+    private func status(_ id: String) -> ServiceStatus? { monitor.statuses.first(where: { $0.id == id }) }
+    private func processingDetail(_ id: String) -> String {
+        switch monitor.queuePaused(id) {
+        case false?: return "Processing. Switch off to pause after the active job; Generate immediately and Run Now jobs still run."
+        case true?: return "Paused. Waiting jobs stay saved; Generate immediately and Run Now jobs still run."
+        case nil: return "Start the generator or its queue to change this."
+        }
+    }
+    private func row<Control: View>(_ title: String, _ detail: String, @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12, weight: .medium))
+                Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            control().padding(.top, 1)
+        }
+    }
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            content()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+    }
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Button { monitor.error = nil; monitor.runtimeSettingsOpen = false } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium)).frame(width: 18, height: 28)
+                }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Back to services")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Settings").font(.system(size: 13, weight: .semibold))
+                    Text("Applies now · shared with each generator's own UI").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !monitor.pausing.isEmpty || monitor.keepWeightsPending != nil { ProgressView().controlSize(.mini) }
+            }
+            Divider()
+            ScrollView {
+            VStack(spacing: 10) {
+                if let image = status("image") {
+                    section("Image Generator") {
+                        row("Process queue", processingDetail("image")) {
+                            ProcessingSwitch(monitor: monitor, title: "Image Generator", service: image)
+                        }
+                        row("Keep image weights loaded", image.settings_note.map { $0 + " " + Self.keepWeightsHelp } ?? Self.keepWeightsHelp) {
+                            KeepWeightsSwitch(monitor: monitor)
+                        }.help(Self.keepWeightsHelp)
+                    }
+                }
+                if let voice = status("voice") {
+                    section("Voice Generator") {
+                        row("Process queue", processingDetail("voice")) {
+                            ProcessingSwitch(monitor: monitor, title: "Voice Generator", service: voice)
+                        }
+                    }
+                }
+            }
+            }
+            if let error = monitor.error { ErrorNotice(text: error) { monitor.error = nil } }
+        }.padding(14)
+    }
+}
+
 struct RowSettings: View {
     @ObservedObject var monitor: Monitor
     let title: String
@@ -499,15 +599,7 @@ struct ServiceFamilyRow: View {
                         .accessibilityHidden(true)
                 }
             }.frame(width: 58)
-            Group {
-                if queue != nil {
-                    ProcessingSwitch(monitor: monitor, title: title, service: service)
-                } else {
-                    Text("—").font(.system(size: 11)).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-                }
-            }.frame(width: 60)
-            if monitor.pending[service.id] != nil || monitor.pausing[service.id] != nil || (queue.map { monitor.pending[$0.id] != nil } ?? false) {
+            if monitor.pending[service.id] != nil || (queue.map { monitor.pending[$0.id] != nil } ?? false) {
                 ProgressView().controlSize(.mini).frame(width: 20, height: 24)
             } else {
                 RowSettings(monitor: monitor, title: title, serviceID: service.id, queueID: queue?.id)
@@ -652,6 +744,8 @@ struct PopoverView: View {
                 PerformanceView(monitor: monitor, performance: monitor.performance, identifier: id)
             } else if let id = monitor.selectedID, let value = monitor.settings.first(where: { $0.id == id }) {
                 SettingsView(monitor: monitor, value: value).id(id)
+            } else if monitor.runtimeSettingsOpen {
+                RuntimeSettingsView(monitor: monitor)
             } else {
                 VStack(spacing: 8) {
                     HStack(spacing: 6) {
@@ -660,6 +754,9 @@ struct PopoverView: View {
                         Spacer()
                         Text("\(monitor.statuses.filter(\.healthy).count)/5 online")
                             .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
+                        Button { monitor.openRuntimeSettings() } label: {
+                            Image(systemName: "slider.horizontal.3").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 20)
+                        }.buttonStyle(.plain).foregroundStyle(.secondary).help("Settings: queue processing and image weights").accessibilityLabel("Settings")
                         Button { monitor.refresh() } label: {
                             Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .medium)).frame(width: 18, height: 20)
                         }.buttonStyle(.plain).foregroundStyle(.secondary).help("Refresh status").accessibilityLabel("Refresh status")
@@ -675,7 +772,6 @@ struct PopoverView: View {
                                 Spacer(minLength: 0)
                                 Text("Service").frame(width: 44)
                                 Text("Queue").frame(width: 58)
-                                Text("Processing").frame(width: 60)
                                 Color.clear.frame(width: 20, height: 1)
                             }.font(.system(size: 10)).foregroundStyle(.secondary).frame(height: 12)
                             VStack(spacing: 0) {
@@ -711,7 +807,12 @@ extension Monitor {
             let modelInfo: CGFloat = statuses.first(where: { $0.id == id })?.activeModelSummary == nil ? 0 : 32
             return NSSize(width: 360, height: base + extra + modelInfo + (error == nil ? 0 : 76))
         }
-        return NSSize(width: 388, height: notice == nil ? 160 : 244)
+        if runtimeSettingsOpen {
+            // Room for both generator sections; an ImageGen setting note and an error notice add lines.
+            let note: CGFloat = statuses.first(where: { $0.id == "image" })?.settings_note == nil ? 0 : 28
+            return NSSize(width: 360, height: 372 + note + (error == nil ? 0 : 76))
+        }
+        return NSSize(width: 320, height: notice == nil ? 160 : 244)
     }
 }
 
