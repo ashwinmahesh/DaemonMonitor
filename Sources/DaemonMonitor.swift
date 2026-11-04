@@ -443,13 +443,14 @@ struct KeepWeightsSwitch: View {
     }
 }
 
-struct RuntimeSettingsView: View {
+/// The applies-now switches for one generator ("image" or "voice"), shown in the header's Settings view and in that generator's own settings.
+struct LiveSettingsRows: View {
     @ObservedObject var monitor: Monitor
+    let service: ServiceStatus
     static let keepWeightsHelp = "Keeps Qwen-Image and FLUX.2 Klein loaded while the next image uses the same model (about 30 s saved per Qwen image); holds about 9.4 GB while loaded."
 
-    private func status(_ id: String) -> ServiceStatus? { monitor.statuses.first(where: { $0.id == id }) }
-    private func processingDetail(_ id: String) -> String {
-        switch monitor.queuePaused(id) {
+    private var processingDetail: String {
+        switch monitor.queuePaused(service.id) {
         case false?: return "Processing. Switch off to pause after the active job; Generate immediately and Run Now jobs still run."
         case true?: return "Paused. Waiting jobs stay saved; Generate immediately and Run Now jobs still run."
         case nil: return "Start the generator or its queue to change this."
@@ -464,6 +465,24 @@ struct RuntimeSettingsView: View {
             control().padding(.top, 1)
         }
     }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row("Process queue", processingDetail) {
+                ProcessingSwitch(monitor: monitor, title: service.id == "image" ? "Image Generator" : "Voice Generator", service: service)
+            }
+            if service.id == "image" {
+                row("Keep image weights loaded", service.settings_note.map { $0 + " " + Self.keepWeightsHelp } ?? Self.keepWeightsHelp) {
+                    KeepWeightsSwitch(monitor: monitor)
+                }.help(Self.keepWeightsHelp)
+            }
+        }
+    }
+}
+
+struct RuntimeSettingsView: View {
+    @ObservedObject var monitor: Monitor
+
+    private func status(_ id: String) -> ServiceStatus? { monitor.statuses.first(where: { $0.id == id }) }
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
@@ -490,21 +509,10 @@ struct RuntimeSettingsView: View {
             ScrollView {
             VStack(spacing: 10) {
                 if let image = status("image") {
-                    section("Image Generator") {
-                        row("Process queue", processingDetail("image")) {
-                            ProcessingSwitch(monitor: monitor, title: "Image Generator", service: image)
-                        }
-                        row("Keep image weights loaded", image.settings_note.map { $0 + " " + Self.keepWeightsHelp } ?? Self.keepWeightsHelp) {
-                            KeepWeightsSwitch(monitor: monitor)
-                        }.help(Self.keepWeightsHelp)
-                    }
+                    section("Image Generator") { LiveSettingsRows(monitor: monitor, service: image) }
                 }
                 if let voice = status("voice") {
-                    section("Voice Generator") {
-                        row("Process queue", processingDetail("voice")) {
-                            ProcessingSwitch(monitor: monitor, title: "Voice Generator", service: voice)
-                        }
-                    }
+                    section("Voice Generator") { LiveSettingsRows(monitor: monitor, service: voice) }
                 }
             }
             }
@@ -628,6 +636,10 @@ struct SettingsView: View {
     @State private var queuePort: String
     private var generator: Bool { value.id == "image" || value.id == "voice" }
     private var liveStatus: ServiceStatus? { monitor.statuses.first(where: { $0.id == value.id }) }
+    /// The family's generator status: its queue switches apply to service and queue settings alike.
+    private var generatorStatus: ServiceStatus? {
+        value.id == "bridge" ? nil : monitor.statuses.first(where: { $0.id == (value.id.hasPrefix("image") ? "image" : "voice") })
+    }
     private var title: String {
         if value.id == "bridge" { return "AI Bridge" }
         return value.id.hasPrefix("image") ? "Image Generator" : "Voice Generator"
@@ -682,6 +694,20 @@ struct SettingsView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    if let generatorStatus {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Live").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                                Spacer()
+                                if monitor.pausing[generatorStatus.id] != nil || monitor.keepWeightsPending != nil { ProgressView().controlSize(.mini) }
+                                Text("Applies now").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            LiveSettingsRows(monitor: monitor, service: generatorStatus)
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        Text("Startup").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, -6)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         portRow("Port", $port)
                         if generator {
